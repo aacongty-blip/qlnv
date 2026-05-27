@@ -260,19 +260,26 @@ const DEFAULT_RATING_TIERS = [
 ];
 
 /* ============================================================
-   DATA LAYER – LocalStorage
+   DATA LAYER – Firebase Firestore (không dùng localStorage)
    ============================================================ */
-const DB_KEY='HRM_EMC_DB_v1';
 const SESSION_KEY='HRM_EMC_SESSION_v1';
 
+// RAM cache — toàn bộ dữ liệu giữ trong biến này
+let _dbCache = null;
+
+// Expose để Firebase module có thể set
+Object.defineProperty(window, '_dbCache', {
+  get(){ return _dbCache; },
+  set(v){ _dbCache = v; }
+});
+
 function getDB(){
-  try{
-    const raw=localStorage.getItem(DB_KEY);
-    if(!raw) return initDB();
-    const db = JSON.parse(raw);
-    return migrateDB(db);
-  }catch(e){ return initDB(); }
+  if(_dbCache) return _dbCache;
+  return initDB();
 }
+// Expose ra window để Firebase module gọi được
+window.getDB = getDB;
+
 /* ---------- Di trú dữ liệu: hỗ trợ NV đa nhiệm (assignments) ---------- */
 function migrateDB(db){
   if(!db) return initDB();
@@ -294,17 +301,25 @@ function migrateDB(db){
     if(u.baseSalary===undefined){ u.baseSalary=0; changed=true; }
     if(u.allowance===undefined){ u.allowance=0; changed=true; }
   });
-  // Đảm bảo các collection mới của module Hợp đồng
   if(!Array.isArray(db.contracts)){ db.contracts=[]; changed=true; }
   if(!Array.isArray(db.importSlips)){ db.importSlips=[]; changed=true; }
   if(!Array.isArray(db.suppliers)){ db.suppliers=[]; changed=true; }
   if(changed) saveDB(db);
   return db;
 }
+
+// Debounce timer cho Firebase write
+let _fbWriteTimer = null;
+
 function saveDB(db){
-  localStorage.setItem(DB_KEY, JSON.stringify(db));
-  // Đồng bộ ra file CSDL (nếu đã kết nối) — dữ liệu lưu theo PHẦN MỀM (file .json bên cạnh), không phụ thuộc trình duyệt
-  if(dbFileHandle){ writeToDBFile().catch(e=>console.error('DB file sync err', e)); }
+  _dbCache = db;
+  // Ghi lên Firestore (debounce 1.5s)
+  clearTimeout(_fbWriteTimer);
+  _fbWriteTimer = setTimeout(()=>{
+    if(window._fbSaveToFirestore){
+      window._fbSaveToFirestore(db);
+    }
+  }, 1500);
 }
 
 /* ============================================================
@@ -745,6 +760,7 @@ function render(){
   root.appendChild(app);
   routeTo(currentView);
 }
+window.render = render;
 function renderFileStatusBar(){
   const host=document.getElementById('file-status-bar');
   if(!host) return;
@@ -1951,6 +1967,7 @@ function checkDeadlineWarning(){
   // Tự đóng sau 30 giây nếu không thao tác
   setTimeout(()=>{ const x=document.getElementById('deadline-warn-popup'); if(x) x.remove(); }, 30000);
 }
+window.checkDeadlineWarning = checkDeadlineWarning;
 
 /* ---------- Autocomplete tìm NV ---------- */
 function getEmpPool(){ return window._taskEmpPool || []; }
@@ -4092,6 +4109,7 @@ function renderContractPopupWindow(cid){
   `;
   switchPopupTab('progress');
 }
+window.renderContractPopupWindow = renderContractPopupWindow;
 window.switchPopupTab = function(t){
   _popupTab = t;
   const labels = {
@@ -6939,33 +6957,114 @@ window.assignPcccTaskDyn = function(cid, scope, itemId){
 };
 
 /* ============================================================
-   APP INIT — v3
-   ✓ Đa nhiệm: nhiều mảng cùng lúc, lương = base + allowance + Σ KPI bonus
-   ✓ Lưu CSDL ra file (File System Access API) — không lệ thuộc trình duyệt
+   APP INIT — v4 Firebase
    ============================================================ */
 (async function init(){
-  // Đọc URL param: nếu có ?openContract=ID → render giao diện popup HĐ độc lập
-  const urlParams = new URLSearchParams(location.search);
-  const popupContractId = urlParams.get('openContract');
-
-  await tryRestoreDBFile();
-  if(dbFileHandle){
-    try{
-      const granted = await verifyPermission(dbFileHandle,false);
-      if(granted){
-        const data = await readFromDBFile();
-        if(data && data.users){ localStorage.setItem(DB_KEY, JSON.stringify(data)); }
-      }
-    }catch(e){}
-  }
-  getDB();
-  if(popupContractId){
-    renderContractPopupWindow(popupContractId);
-  } else {
-    render();
-    setTimeout(checkDeadlineWarning, 800);
-  }
+  // Hiển thị màn hình loading, chờ Firebase load xong
+  document.getElementById('root').innerHTML = `
+    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1e3a8a,#0f172a);flex-direction:column;gap:16px">
+      <div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin 0.8s linear infinite"></div>
+      <div style="color:#fff;font-size:16px;font-weight:600">Đang kết nối Firebase...</div>
+      <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    </div>`;
+  // Firebase module sẽ gọi window._onFirebaseReady() sau khi load xong
 })();
+</script>
+
+<!-- ===== FIREBASE MODULE — Nguồn dữ liệu duy nhất ===== -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+import { getFirestore, doc, setDoc, onSnapshot, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyA9m4Mu9b3EGnZsQYqrBxCDclS9avzhE_0",
+  authDomain: "qlnv-app.firebaseapp.com",
+  projectId: "qlnv-app",
+  storageBucket: "qlnv-app.firebasestorage.app",
+  messagingSenderId: "55491624607",
+  appId: "1:55491624607:web:8520bcac2ebc32cb75ecaa"
+};
+
+const _app  = initializeApp(firebaseConfig);
+const _db   = getFirestore(_app);
+const _DOC  = doc(_db, 'hrm', 'emc_data');
+
+// ---- Hàm ghi lên Firestore ----
+window._fbSaveToFirestore = async function(dbObj){
+  try{
+    await setDoc(_DOC, { payload: JSON.stringify(dbObj), updatedAt: serverTimestamp() });
+  }catch(e){ console.error('🔥 Firestore write error:', e); }
+};
+
+// ---- Import dữ liệu JSON có sẵn lên Firebase ----
+window.importDataToFirebase = async function(jsonData){
+  if(!confirm('Import dữ liệu lên Firebase? Sẽ ghi đè dữ liệu cloud hiện tại.')) return;
+  try{
+    const payload = typeof jsonData === 'string' ? jsonData : JSON.stringify(jsonData);
+    await setDoc(_DOC, { payload, updatedAt: serverTimestamp() });
+    alert('✅ Import thành công!');
+  }catch(e){ alert('Lỗi: '+e.message); }
+};
+
+// ---- Lắng nghe Firestore realtime ----
+let _booted = false;
+onSnapshot(_DOC, (snap) => {
+  let dbData = null;
+
+  if(snap.exists() && snap.data()?.payload){
+    try{ dbData = JSON.parse(snap.data().payload); }catch(e){}
+  }
+
+  if(!_booted){
+    _booted = true;
+    // Lần đầu: load data vào cache rồi khởi động app
+    if(dbData && dbData.users){
+      window._dbCache = dbData;
+    } else {
+      // Firestore trống → dùng initDB (tạo mới)
+      window._dbCache = null;
+    }
+
+    // Khởi động app
+    const urlParams = new URLSearchParams(location.search);
+    const popupContractId = urlParams.get('openContract');
+    if(typeof window.getDB === 'function') window.getDB(); // warm cache
+    if(popupContractId){
+      if(typeof window.renderContractPopupWindow === 'function')
+        window.renderContractPopupWindow(popupContractId);
+    } else {
+      if(typeof window.render === 'function') window.render();
+      setTimeout(()=>{ if(typeof window.checkDeadlineWarning === 'function') window.checkDeadlineWarning(); }, 800);
+    }
+    return;
+  }
+
+  // Cập nhật realtime từ người dùng khác
+  if(dbData && dbData.users){
+    window._dbCache = dbData;
+    if(typeof window.render === 'function') window.render();
+    // Hiện toast thông báo
+    const t = document.createElement('div');
+    t.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#3b82f6;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+    t.textContent = '🔄 Dữ liệu vừa đồng bộ từ người dùng khác';
+    document.body.appendChild(t);
+    setTimeout(()=>t.remove(), 3000);
+  }
+}, (err)=>{
+  console.error('🔥 Firestore listener error:', err);
+  if(!_booted){
+    _booted = true;
+    document.getElementById('root').innerHTML = `
+      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;flex-direction:column;gap:12px">
+        <div style="color:#f87171;font-size:18px;font-weight:700">❌ Không kết nối được Firebase</div>
+        <div style="color:#94a3b8;font-size:14px">${err.message}</div>
+        <button onclick="location.reload()" style="margin-top:10px;padding:10px 20px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px">Thử lại</button>
+      </div>`;
+  }
+});
+
+console.log('🔥 Firebase Firestore — Nguồn dữ liệu duy nhất đã sẵn sàng');
 </script>
 </body>
 </html>
