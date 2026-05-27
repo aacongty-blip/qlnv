@@ -260,7 +260,7 @@ const DEFAULT_RATING_TIERS = [
 ];
 
 /* ============================================================
-   DATA LAYER – Firebase Firestore (không dùng localStorage)
+   DATA LAYER – Firebase Realtime Database (không dùng localStorage)
    ============================================================ */
 const SESSION_KEY='HRM_EMC_SESSION_v1';
 
@@ -313,11 +313,11 @@ let _fbWriteTimer = null;
 
 function saveDB(db){
   _dbCache = db;
-  // Ghi lên Firestore (debounce 1.5s)
+  // Ghi lên Realtime Database (debounce 1.5s)
   clearTimeout(_fbWriteTimer);
   _fbWriteTimer = setTimeout(()=>{
-    if(window._fbSaveToFirestore){
-      window._fbSaveToFirestore(db);
+    if(window._fbSaveToRTDB){
+      window._fbSaveToRTDB(db);
     }
   }, 1500);
 }
@@ -3158,7 +3158,7 @@ function viewBackup(main, u){
     <div class="card">
       <h3>🔥 Lưu dữ liệu trên Firebase Cloud</h3>
       <div style="padding:12px;background:#dcfce7;border-radius:8px;margin-bottom:10px">
-        ✅ Dữ liệu đang được lưu trên <b>Firebase Firestore</b> · Đồng bộ realtime cho tất cả người dùng · Không phụ thuộc trình duyệt hay thiết bị.
+        ✅ Dữ liệu đang được lưu trên <b>Firebase Realtime Database</b> · Đồng bộ realtime cho tất cả người dùng · Không phụ thuộc trình duyệt hay thiết bị.
       </div>
       <div class="help-text">Mọi thay đổi được tự động đồng bộ lên cloud sau 1.5 giây. Bạn vẫn có thể tải file JSON để backup cục bộ phòng trường hợp khẩn cấp.</div>
     </div>
@@ -6974,7 +6974,7 @@ const _rtdb = getDatabase(_app);
 const _REF  = ref(_rtdb, 'hrm/emc_data');
 
 // ---- Hàm ghi lên Realtime Database ----
-window._fbSaveToFirestore = async function(dbObj){
+window._fbSaveToRTDB = async function(dbObj){
   try{
     await set(_REF, { payload: JSON.stringify(dbObj), updatedAt: Date.now() });
   }catch(e){ console.error('🔥 RTDB write error:', e); }
