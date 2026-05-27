@@ -6953,11 +6953,11 @@ window.assignPcccTaskDyn = function(cid, scope, itemId){
 })();
 </script>
 
-<!-- ===== FIREBASE MODULE — Nguồn dữ liệu duy nhất ===== -->
+<!-- ===== FIREBASE MODULE — Realtime Database ===== -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
-import { getFirestore, doc, setDoc, onSnapshot, serverTimestamp }
-  from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
+import { getDatabase, ref, set, onValue }
+  from "https://www.gstatic.com/firebasejs/12.13.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA9m4Mu9b3EGnZsQYqrBxCDclS9avzhE_0",
@@ -6965,18 +6965,19 @@ const firebaseConfig = {
   projectId: "qlnv-app",
   storageBucket: "qlnv-app.firebasestorage.app",
   messagingSenderId: "55491624607",
-  appId: "1:55491624607:web:8520bcac2ebc32cb75ecaa"
+  appId: "1:55491624607:web:8520bcac2ebc32cb75ecaa",
+  databaseURL: "https://qlnv-app-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 
 const _app  = initializeApp(firebaseConfig);
-const _db   = getFirestore(_app);
-const _DOC  = doc(_db, 'hrm', 'emc_data');
+const _rtdb = getDatabase(_app);
+const _REF  = ref(_rtdb, 'hrm/emc_data');
 
-// ---- Hàm ghi lên Firestore ----
+// ---- Hàm ghi lên Realtime Database ----
 window._fbSaveToFirestore = async function(dbObj){
   try{
-    await setDoc(_DOC, { payload: JSON.stringify(dbObj), updatedAt: serverTimestamp() });
-  }catch(e){ console.error('🔥 Firestore write error:', e); }
+    await set(_REF, { payload: JSON.stringify(dbObj), updatedAt: Date.now() });
+  }catch(e){ console.error('🔥 RTDB write error:', e); }
 };
 
 // ---- Import dữ liệu JSON có sẵn lên Firebase ----
@@ -6984,18 +6985,18 @@ window.importDataToFirebase = async function(jsonData){
   if(!confirm('Import dữ liệu lên Firebase? Sẽ ghi đè dữ liệu cloud hiện tại.')) return;
   try{
     const payload = typeof jsonData === 'string' ? jsonData : JSON.stringify(jsonData);
-    await setDoc(_DOC, { payload, updatedAt: serverTimestamp() });
+    await set(_REF, { payload, updatedAt: Date.now() });
     alert('✅ Import thành công!');
   }catch(e){ alert('Lỗi: '+e.message); }
 };
 
-// ---- Lắng nghe Firestore realtime ----
+// ---- Lắng nghe Realtime Database ----
 let _booted = false;
-onSnapshot(_DOC, (snap) => {
+onValue(_REF, (snap) => {
   let dbData = null;
 
-  if(snap.exists() && snap.data()?.payload){
-    try{ dbData = JSON.parse(snap.data().payload); }catch(e){}
+  if(snap.exists() && snap.val()?.payload){
+    try{ dbData = JSON.parse(snap.val().payload); }catch(e){}
   }
 
   if(!_booted){
@@ -7004,7 +7005,7 @@ onSnapshot(_DOC, (snap) => {
     if(dbData && dbData.users){
       window._dbCache = dbData;
     } else {
-      // Firestore trống → dùng initDB (tạo mới)
+      // RTDB trống → dùng initDB (tạo mới)
       window._dbCache = null;
     }
 
@@ -7034,7 +7035,7 @@ onSnapshot(_DOC, (snap) => {
     setTimeout(()=>t.remove(), 3000);
   }
 }, (err)=>{
-  console.error('🔥 Firestore listener error:', err);
+  console.error('🔥 RTDB listener error:', err);
   if(!_booted){
     _booted = true;
     document.getElementById('root').innerHTML = `
@@ -7046,7 +7047,7 @@ onSnapshot(_DOC, (snap) => {
   }
 });
 
-console.log('🔥 Firebase Firestore — Nguồn dữ liệu duy nhất đã sẵn sàng');
+console.log('🔥 Firebase Realtime Database — Nguồn dữ liệu duy nhất đã sẵn sàng');
 </script>
 </body>
 </html>
