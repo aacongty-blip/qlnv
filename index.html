@@ -308,18 +308,12 @@ function migrateDB(db){
   return db;
 }
 
-// Debounce timer cho Firebase write
-let _fbWriteTimer = null;
-
 function saveDB(db){
   _dbCache = db;
-  // Ghi lên Realtime Database (debounce 1.5s)
-  clearTimeout(_fbWriteTimer);
-  _fbWriteTimer = setTimeout(()=>{
-    if(window._fbSaveToRTDB){
-      window._fbSaveToRTDB(db);
-    }
-  }, 1500);
+  // Ghi lên Realtime Database ngay lập tức
+  if(window._fbSaveToRTDB){
+    window._fbSaveToRTDB(db);
+  }
 }
 
 /* ============================================================
@@ -7026,7 +7020,14 @@ onValue(_REF, (snap) => {
   // Cập nhật realtime từ người dùng khác
   if(dbData && dbData.users){
     window._dbCache = dbData;
-    if(typeof window.render === 'function') window.render();
+    // Nếu đang ở tab popup chi tiết dự án → re-render đúng popup, không reset về trang chủ
+    const _popupId = new URLSearchParams(location.search).get('openContract');
+    if(_popupId){
+      if(typeof window.renderContractPopupWindow === 'function')
+        window.renderContractPopupWindow(_popupId);
+    } else {
+      if(typeof window.render === 'function') window.render();
+    }
     // Hiện toast thông báo
     const t = document.createElement('div');
     t.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#3b82f6;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
