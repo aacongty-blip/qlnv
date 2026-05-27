@@ -36,7 +36,7 @@ body{font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;background:#f1f4f9
 .login-box{background:#fff;border-radius:14px;padding:34px 36px;width:100%;max-width:460px;box-shadow:0 20px 60px rgba(0,0,0,.25)}
 .login-box h1{font-size:22px;color:#1e3a8a;text-align:center;margin-bottom:6px}
 .login-box .sub{text-align:center;color:#64748b;margin-bottom:22px;font-size:13px}
-.role-pick{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px}
+.role-pick{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px}
 .role-pick button{padding:14px 8px;border:2px solid #e2e8f0;background:#fff;border-radius:10px;cursor:pointer;font-weight:600;color:#475569;transition:all .15s}
 .role-pick button.active{border-color:#1e3a8a;background:#1e3a8a;color:#fff}
 .role-pick button:hover{border-color:#1e3a8a}
@@ -855,6 +855,7 @@ function renderLogin(){
         <div class="sub">Hệ thống quản lý nhân sự — KPI · Lương · 3 công ty</div>
         <div class="role-pick" id="role-pick">
           <button data-role="admin"><span class="icon">🛡️</span>Admin</button>
+          <button data-role="pm"><span class="icon">💼</span>Quản lý</button>
           <button data-role="manager"><span class="icon">👔</span>Trưởng nhóm</button>
           <button data-role="employee"><span class="icon">👤</span>Nhân viên</button>
         </div>
@@ -891,7 +892,7 @@ function renderLogin(){
       hint.textContent = adminExists ? '' : 'Đặt mật khẩu khởi tạo cho tài khoản Admin (≥4 ký tự)';
     }else{
       userField.style.display='';
-      hint.textContent='';
+      hint.textContent = r==='pm' ? 'Đăng nhập với tài khoản Quản lý' : '';
     }
   }
   pick.querySelectorAll('button').forEach(b=>b.addEventListener('click',(ev)=>{ev.preventDefault();setRole(b.dataset.role);}));
@@ -933,6 +934,7 @@ function renderLogin(){
     if(role==='admin'){ sugBox.style.display='none'; return; }
     const qLow = (q||'').toLowerCase().trim();
     let list = db.users.filter(u=>u.role===role);
+    // pm không dùng autocomplete (thường ít tài khoản)
     if(qLow) list = list.filter(u=>
       (u.username||'').toLowerCase().includes(qLow) ||
       (u.name||'').toLowerCase().includes(qLow) ||
