@@ -764,19 +764,10 @@ window.render = render;
 function renderFileStatusBar(){
   const host=document.getElementById('file-status-bar');
   if(!host) return;
-  if(dbFileHandle){
-    host.innerHTML = `<div style="padding:8px 16px;background:#16a34a;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>💾 CSDL đang lưu vào file: <b>${escapeHtml(dbFileName||'(không tên)')}</b> · Dữ liệu đi theo phần mềm, không lệ thuộc trình duyệt.</span>
-      <span><button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="syncDBFileNow()">⟳ Sync ngay</button> <button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="disconnectDBFile()">Ngắt kết nối</button></span>
-    </div>`;
-  } else if(fsaSupported()){
-    host.innerHTML = `<div style="padding:8px 16px;background:#f59e0b;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>⚠ CSDL hiện chỉ lưu trong trình duyệt. Hãy <b>kết nối file</b> để dữ liệu lưu theo phần mềm.</span>
-      <span><button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="connectDBFileOpen()">📂 Mở file CSDL</button> <button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="connectDBFileCreate()">+ Tạo file CSDL</button></span>
-    </div>`;
-  } else {
-    host.innerHTML = `<div style="padding:8px 16px;background:#64748b;color:#fff;font-size:12px">ⓘ Trình duyệt này không hỗ trợ lưu trực tiếp ra file. Hãy dùng <b>Chrome/Edge</b> để bật tính năng lưu CSDL theo phần mềm.</div>`;
-  }
+  host.innerHTML = `<div style="padding:6px 16px;background:#0f766e;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+    <span>🔥 Dữ liệu đang lưu trên <b>Firebase Cloud</b> · Đồng bộ realtime cho tất cả người dùng</span>
+    <span id="fb-sync-status" style="font-size:11px;opacity:.8">✅ Đã kết nối</span>
+  </div>`;
 }
 window.syncDBFileNow = async function(){
   if(!dbFileHandle){ toast('Chưa kết nối file CSDL','warn'); return; }
@@ -3162,25 +3153,16 @@ function viewBackup(main, u){
   const db=getDB();
   const lastB = db.settings.lastBackup ? new Date(db.settings.lastBackup) : null;
   const nextB = lastB ? new Date(lastB.getTime() + db.settings.backupIntervalDays*86400000) : null;
-  const fsaHtml = fsaSupported()
-    ? (dbFileHandle
-        ? `<div style="padding:10px;background:#dcfce7;border-radius:8px;margin-bottom:10px">
-            ✅ Đang kết nối tới file CSDL: <b>${escapeHtml(dbFileName||'')}</b>
-            <div style="margin-top:6px"><button class="btn sm outline" onclick="syncDBFileNow()">⟳ Đồng bộ ngay</button> <button class="btn sm danger" onclick="disconnectDBFile()">Ngắt kết nối</button></div>
-          </div>`
-        : `<div style="padding:10px;background:#fef3c7;border-radius:8px;margin-bottom:10px">
-            ⚠ Chưa kết nối file CSDL. Bấm các nút bên dưới để lưu dữ liệu vào file thực sự (đi theo phần mềm).
-            <div style="margin-top:8px"><button class="btn success" onclick="connectDBFileCreate()">+ Tạo file CSDL mới</button> <button class="btn outline" onclick="connectDBFileOpen()">📂 Mở file CSDL có sẵn</button></div>
-          </div>`)
-    : `<div style="padding:10px;background:#fee2e2;border-radius:8px;margin-bottom:10px">⛔ Trình duyệt này không hỗ trợ File System Access API. Hãy dùng <b>Chrome/Edge</b> phiên bản mới để bật tính năng "Dữ liệu lưu theo phần mềm".</div>`;
   main.innerHTML=`
     <div class="page-head"><h1>☁️ Sao lưu & Phục hồi</h1></div>
     <div class="card">
-      <h3>💾 Lưu dữ liệu THEO PHẦN MỀM (file .json bên cạnh, không phụ thuộc trình duyệt)</h3>
-      <div class="help-text">Chọn 1 file <code>.json</code> (vd: <code>HRM_EMC_data.json</code>) để phần mềm tự động đọc/ghi mỗi khi có thay đổi. Khi chuyển máy / đổi trình duyệt: chỉ cần mở file này, mọi dữ liệu trở lại nguyên vẹn. Phần mềm vẫn dùng localStorage làm <i>cache</i>, nhưng nguồn chính là file.</div>
-      ${fsaHtml}
+      <h3>🔥 Lưu dữ liệu trên Firebase Cloud</h3>
+      <div style="padding:12px;background:#dcfce7;border-radius:8px;margin-bottom:10px">
+        ✅ Dữ liệu đang được lưu trên <b>Firebase Firestore</b> · Đồng bộ realtime cho tất cả người dùng · Không phụ thuộc trình duyệt hay thiết bị.
+      </div>
+      <div class="help-text">Mọi thay đổi được tự động đồng bộ lên cloud sau 1.5 giây. Bạn vẫn có thể tải file JSON để backup cục bộ phòng trường hợp khẩn cấp.</div>
     </div>
-    <div class="help-text">Ngoài lưu theo file ở trên, hệ thống vẫn hỗ trợ sao lưu tự động ${db.settings.backupIntervalDays} ngày/lần gửi về <b>${escapeHtml(db.settings.adminEmail)}</b>. Đồng thời cho phép sao lưu thủ công (tải file .json) và phục hồi từ file đã có.</div>
+    <div class="help-text">Hệ thống vẫn hỗ trợ sao lưu thủ công (tải file .json) và phục hồi từ file đã có phòng trường hợp khẩn cấp.</div>
     <div class="stat-grid">
       <div class="stat-card"><div class="label">Sao lưu lần cuối</div><div class="value" style="font-size:16px">${lastB?lastB.toLocaleString('vi-VN'):'Chưa có'}</div></div>
       <div class="stat-card amber"><div class="label">Lần kế tiếp (tự động)</div><div class="value" style="font-size:16px">${nextB?nextB.toLocaleDateString('vi-VN'):'—'}</div></div>
