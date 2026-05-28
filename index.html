@@ -330,7 +330,24 @@ function getDB(){
 function migrateDB(db){
   if(!db) return initDB();
   let changed=false;
-  (db.users||[]).forEach(u=>{
+
+  // Đảm bảo tất cả collection cơ bản luôn tồn tại (dù Firebase thiếu field)
+  if(!Array.isArray(db.users)){          db.users=[];             changed=true; }
+  if(!Array.isArray(db.tasks)){          db.tasks=[];             changed=true; }
+  if(!Array.isArray(db.kpiEvals)){       db.kpiEvals=[];          changed=true; }
+  if(!Array.isArray(db.contracts)){      db.contracts=[];         changed=true; }
+  if(!Array.isArray(db.importSlips)){    db.importSlips=[];       changed=true; }
+  if(!Array.isArray(db.suppliers)){      db.suppliers=[];         changed=true; }
+  if(!db.salaryRanks)  { db.salaryRanks=JSON.parse(JSON.stringify(DEFAULT_SALARY_RANKS));       changed=true; }
+  if(!db.kpiTemplates) { db.kpiTemplates=JSON.parse(JSON.stringify(DEFAULT_KPI_TEMPLATES));     changed=true; }
+  if(!db.disciplineTemplate){ db.disciplineTemplate=JSON.parse(JSON.stringify(DEFAULT_DISCIPLINE_TEMPLATE)); changed=true; }
+  if(!db.ratingTiers)  { db.ratingTiers=JSON.parse(JSON.stringify(DEFAULT_RATING_TIERS));       changed=true; }
+  if(!db.settings)     { db.settings={ kpiWeightPro:0.7, kpiWeightDisc:0.3, backupIntervalDays:7,
+                           lastBackup:null, adminEmail:'nguyentuananh.emc@gmail.com',
+                           emailjs:{serviceId:'',templateId:'',publicKey:''} }; changed=true; }
+  if(!db.settings.emailjs){ db.settings.emailjs={serviceId:'',templateId:'',publicKey:''}; changed=true; }
+
+  db.users.forEach(u=>{
     if(u.role==='admin') return;
     if(!Array.isArray(u.assignments)){
       u.assignments=[];
@@ -345,12 +362,9 @@ function migrateDB(db){
       changed=true;
     }
     if(u.baseSalary===undefined){ u.baseSalary=0; changed=true; }
-    if(u.allowance===undefined){ u.allowance=0; changed=true; }
+    if(u.allowance===undefined){  u.allowance=0;  changed=true; }
   });
-  // Đảm bảo các collection mới của module Hợp đồng
-  if(!Array.isArray(db.contracts)){ db.contracts=[]; changed=true; }
-  if(!Array.isArray(db.importSlips)){ db.importSlips=[]; changed=true; }
-  if(!Array.isArray(db.suppliers)){ db.suppliers=[]; changed=true; }
+
   if(changed) saveDB(db);
   return db;
 }
