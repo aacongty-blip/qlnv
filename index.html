@@ -372,9 +372,15 @@ function fbStartRealtime(){
     if(cur !== nxt){
       localStorage.setItem(DB_KEY, JSON.stringify(data));
       _fbConnected = true;
-      renderFileStatusBar();
-      // Nếu đang xem trang → re-render nhẹ để phản ánh thay đổi
-      if(currentUser()) routeTo(currentView);
+      // Popup window (có ?openContract) → re-render nội dung popup
+      if(_popupCid){
+        renderFileStatusBar();
+        renderPopupBody();
+      // Trang chính → re-render view hiện tại
+      } else if(currentUser()){
+        renderFileStatusBar();
+        routeTo(currentView);
+      }
     }
   });
 }
@@ -4743,9 +4749,7 @@ function renderPopupSuppliers(host, cid){
 
 /* ---------- Mở 1 HĐ trong CỬA SỔ MỚI có thể thay đổi kích thước ---------- */
 window.openContractWindow = function(cid){
-  const c = getDB().contracts.find(x=>x.id===cid);
-  if(!c){ toast('Không tìm thấy HĐ','error'); return; }
-  // Đường dẫn cùng file HTML, thêm ?openContract=ID → trang sẽ tự route vào view popup
+  // Không kiểm tra localStorage ở đây vì có thể chưa đồng bộ — để popup tự pull Firebase
   const url = location.pathname + '?openContract=' + encodeURIComponent(cid);
   const w = window.open(url, 'contract_'+cid,
     'width=1400,height=900,resizable=yes,scrollbars=yes,menubar=no,toolbar=no');
