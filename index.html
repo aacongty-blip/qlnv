@@ -6,23 +6,22 @@
 <title>EMC · AA · TẢN VIÊN | Quản lý nhân sự</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
-<!-- Firebase SDK -->
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getDatabase, ref, set, get, onValue, off } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
-
-  const firebaseConfig = {
-    databaseURL: "https://qlnv-app-default-rtdb.asia-southeast1.firebasedatabase.app/"
-  };
-  const _app = initializeApp(firebaseConfig);
-  const _db  = getDatabase(_app);
-  window._fbRef = (path) => ref(_db, path);
-  window._fbSet = (path, val) => set(ref(_db, path), val);
-  window._fbGet = (path) => get(ref(_db, path)).then(s => s.val());
-  window._fbOn  = (path, cb) => { const r = ref(_db, path); onValue(r, s => cb(s.val())); return r; };
-  window._fbOff = (r) => off(r);
-  window._firebaseReady = true;
-  document.dispatchEvent(new Event('firebase-ready'));
+<!-- Firebase SDK (compat — chạy đồng bộ với script thường, không bị vấn đề timing của type=module) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script>
+  (function(){
+    const firebaseConfig = {
+      databaseURL: "https://qlnv-app-default-rtdb.asia-southeast1.firebasedatabase.app/"
+    };
+    const _app = firebase.initializeApp(firebaseConfig);
+    const _db  = firebase.database();
+    window._fbSet = (path, val) => _db.ref(path).set(val);
+    window._fbGet = (path) => _db.ref(path).get().then(s => s.val());
+    window._fbOn  = (path, cb) => { const r = _db.ref(path); r.on('value', s => cb(s.val())); return r; };
+    window._fbOff = (r) => r.off();
+    window._firebaseReady = true;
+  })();
 </script>
 <!-- PDF.js & Tesseract.js — tải lazy khi import vật tư từ PDF/ảnh -->
 <script>
@@ -291,12 +290,9 @@ let _fbSyncHandle = null;   // ref đang lắng nghe realtime
 let _fbConnected  = false;
 let _fbPendingSave = null;  // debounce write
 
-/* Chờ Firebase module khởi tạo xong (type=module bất đồng bộ) */
+/* Chờ Firebase sẵn sàng — với compat CDN, luôn sẵn sàng ngay */
 function _waitFirebase(){
-  return new Promise(res=>{
-    if(window._firebaseReady){ res(); return; }
-    document.addEventListener('firebase-ready', ()=>res(), {once:true});
-  });
+  return Promise.resolve();
 }
 
 /* ---------- Đọc DB: ưu tiên cache localStorage, sau đó pull Firebase ---------- */
