@@ -4164,7 +4164,7 @@ function renderContractPopupWindow(cid){
   const c=db.contracts.find(x=>x.id===cid);
   document.title = 'HĐ: ' + (c?c.name||c.code:'(Không tìm thấy)');
   const root=document.getElementById('root');
-  if(!c){ root.innerHTML='<div class="empty" style="padding:60px"><h2>❌ Hợp đồng không tồn tại</h2><p>Có thể HĐ đã bị xóa.</p></div>'; return; }
+  if(!c){ root.innerHTML='<div class="empty" style="padding:60px"><h2>❌ Không tìm thấy dự án</h2><p>Dự án có thể đã bị xóa, hoặc chưa đồng bộ từ Firebase.</p><p style="margin-top:12px"><button class="btn outline" onclick="location.reload()">🔄 Thử tải lại</button></p></div>'; return; }
   root.innerHTML = `
     <div style="padding:14px 20px;background:linear-gradient(135deg,#1e3a8a,#0f172a);color:#fff">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
@@ -7178,6 +7178,16 @@ window.assignPcccTaskDyn = function(cid, scope, itemId){
   fbStartRealtime();
 
   if(popupContractId){
+    // Cửa sổ popup: Firebase đã pull xong ở trên → dữ liệu đã có trong localStorage
+    // Nếu vẫn không tìm thấy → thử pull thêm 1 lần nữa (phòng trường hợp timeout lần đầu)
+    const db = getDB();
+    const found = db.contracts && db.contracts.find(x=>x.id===popupContractId);
+    if(!found && window._firebaseReady){
+      try{
+        const retry = await fbPullOnce();
+        if(retry) _fbConnected = true;
+      }catch(e){}
+    }
     renderContractPopupWindow(popupContractId);
   } else {
     render();
