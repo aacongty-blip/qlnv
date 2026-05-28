@@ -319,16 +319,16 @@ function getDB(){
   return _db;
 }
 
-/* Ghi DB: cập nhật RAM + đẩy Firebase ngay */
-let _lastSaveTs = 0;
+/* Ghi DB: cập nhật RAM + đẩy Firebase với version tăng dần */
+let _writeVersion = 0; // tăng mỗi lần ghi — listener chỉ nhận bản có version >= version này
 function saveDB(db){
+  _writeVersion++;
+  db._v = _writeVersion; // nhúng version vào chính dữ liệu để Firebase mang theo
   _db = db;
-  _lastSaveTs = Date.now();
-  console.log('[saveDB] users:', db.users?.length, 'contracts:', db.contracts?.length, 'ts:', _lastSaveTs);
   if(window._firebaseReady && _fbConnected){
     window._fbSet(FB_PATH, db)
-      .then(()=> console.log('[saveDB] Firebase write OK'))
-      .catch(e=> console.error('[saveDB] Firebase write FAIL', e));
+      .then(()=> console.log('[saveDB] OK — v:', _writeVersion, 'users:', db.users?.length))
+      .catch(e=> console.error('[saveDB] FAIL', e));
   } else {
     console.warn('[saveDB] BLOCKED — firebaseReady:', window._firebaseReady, '_fbConnected:', _fbConnected);
   }
@@ -387,29 +387,38 @@ async function fbPullOnce(){
   try{
     const data = await window._fbGet(FB_PATH);
     _db = migrateDB(data || null);
+    // Khởi tạo _writeVersion từ dữ liệu Firebase để không bị reset về 0
+    if(_db._v) _writeVersion = _db._v;
     _fbConnected = true;
     return _db;
   }catch(e){
     console.warn('Firebase pull err:', e);
     if(!_db) _db = _buildEmptyDB();
-    // Kể cả khi pull thất bại, vẫn đánh dấu connected để saveDB không bị block
     _fbConnected = true;
     return null;
   }
 }
 
-/* Realtime listener — nhận thay đổi từ máy KHÁC, bỏ qua echo của chính mình */
+/* Realtime listener — nhận thay đổi từ máy KHÁC, dùng version để tránh nhận bản cũ */
 function fbStartRealtime(){
   if(_fbSyncHandle || !window._firebaseReady) return;
   _fbSyncHandle = window._fbOn(FB_PATH, (data)=>{
-    const age = Date.now() - _lastSaveTs;
-    console.log('[listener] fire — users:', data?.users?.length, 'contracts:', data?.contracts?.length, 'age since lastSave:', age+'ms');
     if(!data || !data.users) return;
-    if(age < 2000){
-      console.log('[listener] IGNORED — too soon after local save');
+    const incomingV = data._v || 0;
+    // Bỏ qua nếu version Firebase thấp hơn version mình đã ghi
+    // — đây là bản cũ đang trên đường về, chưa phải bản mới nhất
+    if(incomingV < _writeVersion){
+      console.log('[listener] IGNORED stale v:', incomingV, '< local v:', _writeVersion);
       return;
     }
-    console.log('[listener] ACCEPTED — updating _db');
+    // Version bằng nhau = chính mình vừa ghi, bỏ qua re-render không cần thiết
+    if(incomingV === _writeVersion && _db){
+      console.log('[listener] IGNORED own echo v:', incomingV);
+      return;
+    }
+    // Version cao hơn = máy khác vừa ghi → nhận và cập nhật
+    console.log('[listener] ACCEPTED v:', incomingV, 'users:', data.users?.length);
+    _writeVersion = incomingV;
     _db = migrateDB(data);
     _fbConnected = true;
     if(typeof _popupCid !== 'undefined' && _popupCid){
