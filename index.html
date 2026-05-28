@@ -7142,19 +7142,39 @@ window.assignPcccTaskDyn = function(cid, scope, itemId){
    ✓ Lưu CSDL trên Firebase Realtime DB — đồng bộ thời gian thực mọi thiết bị
    ============================================================ */
 (async function init(){
-  // Đọc URL param: nếu có ?openContract=ID → render giao diện popup HĐ độc lập
   const urlParams = new URLSearchParams(location.search);
   const popupContractId = urlParams.get('openContract');
 
-  // Khởi động UI ngay bằng dữ liệu cache localStorage
-  getDB();
+  // Hiện màn hình loading — tránh hiển thị dữ liệu cũ từ cache rồi "nhảy" khi Firebase trả về
+  document.getElementById('root').innerHTML = `
+    <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+                background:linear-gradient(135deg,#1e3a8a 0%,#0f172a 100%);gap:18px">
+      <div style="color:#fff;font-size:22px;font-weight:700;letter-spacing:.3px">EMC · AA · TẢN VIÊN</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;animation:fb-dot 1.2s ease-in-out infinite"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;animation:fb-dot 1.2s ease-in-out infinite .2s"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;animation:fb-dot 1.2s ease-in-out infinite .4s"></div>
+      </div>
+      <div style="color:#94a3b8;font-size:13px" id="fb-loading-msg">Đang kết nối Firebase…</div>
+      <style>@keyframes fb-dot{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}</style>
+    </div>`;
 
-  // Chờ Firebase sẵn sàng rồi pull dữ liệu mới nhất
-  await _waitFirebase();
-  const fbData = await fbPullOnce();
-  if(fbData){ /* đã cập nhật localStorage trong fbPullOnce */ }
+  // Pull Firebase — đây là nguồn dữ liệu chính, bắt buộc phải chờ
+  try{
+    const fbData = await Promise.race([
+      fbPullOnce(),
+      // Timeout 8 giây: nếu mạng quá chậm/lỗi → fallback về localStorage cache
+      new Promise((_,rej) => setTimeout(()=>rej(new Error('timeout')), 8000))
+    ]);
+    if(fbData) _fbConnected = true;
+  }catch(e){
+    // Hết timeout hoặc lỗi mạng → dùng cache localStorage, vẫn tiếp tục
+    const msgEl = document.getElementById('fb-loading-msg');
+    if(msgEl) msgEl.textContent = 'Không kết nối được Firebase — dùng dữ liệu cục bộ…';
+    await new Promise(r => setTimeout(r, 1200)); // Cho người dùng đọc thông báo
+  }
 
-  // Bật realtime listener
+  // Bật realtime listener để nhận thay đổi từ các máy khác
   fbStartRealtime();
 
   if(popupContractId){
