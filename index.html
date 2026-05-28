@@ -289,196 +289,146 @@ const DEFAULT_RATING_TIERS = [
 ];
 
 /* ============================================================
-   DATA LAYER – Firebase Realtime Database
-   ✓ Dữ liệu đồng bộ realtime qua Firebase, không lệ thuộc trình duyệt
-   ✓ Giữ bản cache trong localStorage để offline / tốc độ
+   DATA LAYER – Firebase only, không localStorage
+   ✓ _db = bản in-memory duy nhất trong RAM
+   ✓ getDB() đọc từ _db (tức thì)
+   ✓ saveDB() ghi _db + đẩy Firebase ngay lập tức
    ============================================================ */
-const DB_KEY='HRM_EMC_DB_v1';
 const SESSION_KEY='HRM_EMC_SESSION_v1';
-const FB_PATH = 'hrm';   // đường dẫn gốc trên Firebase
+const FB_PATH = 'hrm';
 
-/* ---------- Firebase trạng thái kết nối ---------- */
-let _fbSyncHandle = null;   // ref đang lắng nghe realtime
+let _db           = null;
+let _fbSyncHandle = null;
 let _fbConnected  = false;
-let _fbPendingSave = null;  // debounce write
-let _fbPullDone   = false;  // chặn ghi Firebase trước khi pull xong — tránh ghi đè dữ liệu thật
 
-/* Chờ Firebase SDK khởi tạo xong (polling mỗi 50ms, tối đa 10 giây) */
+/* Chờ Firebase SDK khởi tạo xong */
 function _waitFirebase(){
   return new Promise((resolve, reject) => {
     if(window._firebaseReady){ resolve(); return; }
     const start = Date.now();
     const check = setInterval(()=>{
-      if(window._firebaseReady){
-        clearInterval(check); resolve();
-      } else if(Date.now() - start > 10000){
-        clearInterval(check); reject(new Error('Firebase SDK timeout'));
-      }
+      if(window._firebaseReady){ clearInterval(check); resolve(); }
+      else if(Date.now() - start > 10000){ clearInterval(check); reject(new Error('Firebase SDK timeout')); }
     }, 50);
   });
 }
 
-/* ---------- Đọc DB: ưu tiên cache localStorage, sau đó pull Firebase ---------- */
+/* Đọc DB từ RAM */
 function getDB(){
-  try{
-    const raw=localStorage.getItem(DB_KEY);
-    if(!raw) return initDB();
-    const db = JSON.parse(raw);
-    return migrateDB(db);
-  }catch(e){ return initDB(); }
+  if(!_db) _db = _buildEmptyDB();
+  return _db;
 }
-/* ---------- Di trú dữ liệu: hỗ trợ NV đa nhiệm (assignments) ---------- */
+
+/* Ghi DB: cập nhật RAM + đẩy Firebase ngay */
+function saveDB(db){
+  _db = db;
+  if(window._firebaseReady && _fbConnected){
+    window._fbSet(FB_PATH, db).catch(e=>console.error('Firebase write err', e));
+  }
+}
+
+/* DB rỗng mặc định */
+function _buildEmptyDB(){
+  return {
+    users:[], tasks:[], kpiEvals:[], contracts:[], importSlips:[], suppliers:[],
+    salaryRanks: JSON.parse(JSON.stringify(DEFAULT_SALARY_RANKS)),
+    kpiTemplates: JSON.parse(JSON.stringify(DEFAULT_KPI_TEMPLATES)),
+    disciplineTemplate: JSON.parse(JSON.stringify(DEFAULT_DISCIPLINE_TEMPLATE)),
+    ratingTiers: JSON.parse(JSON.stringify(DEFAULT_RATING_TIERS)),
+    settings:{ kpiWeightPro:0.7, kpiWeightDisc:0.3, backupIntervalDays:7,
+               lastBackup:null, adminEmail:'nguyentuananh.emc@gmail.com',
+               emailjs:{serviceId:'',templateId:'',publicKey:''} },
+    initialized:true, version:1
+  };
+}
+
+/* initDB — alias để không vỡ các chỗ gọi cũ */
+function initDB(){ return _buildEmptyDB(); }
+
+/* Di trú / đảm bảo đủ collection */
 function migrateDB(db){
-  if(!db) return initDB();
-  let changed=false;
-
-  // Đảm bảo tất cả collection cơ bản luôn tồn tại (dù Firebase thiếu field)
-  if(!Array.isArray(db.users)){          db.users=[];             changed=true; }
-  if(!Array.isArray(db.tasks)){          db.tasks=[];             changed=true; }
-  if(!Array.isArray(db.kpiEvals)){       db.kpiEvals=[];          changed=true; }
-  if(!Array.isArray(db.contracts)){      db.contracts=[];         changed=true; }
-  if(!Array.isArray(db.importSlips)){    db.importSlips=[];       changed=true; }
-  if(!Array.isArray(db.suppliers)){      db.suppliers=[];         changed=true; }
-  if(!db.salaryRanks)  { db.salaryRanks=JSON.parse(JSON.stringify(DEFAULT_SALARY_RANKS));       changed=true; }
-  if(!db.kpiTemplates) { db.kpiTemplates=JSON.parse(JSON.stringify(DEFAULT_KPI_TEMPLATES));     changed=true; }
-  if(!db.disciplineTemplate){ db.disciplineTemplate=JSON.parse(JSON.stringify(DEFAULT_DISCIPLINE_TEMPLATE)); changed=true; }
-  if(!db.ratingTiers)  { db.ratingTiers=JSON.parse(JSON.stringify(DEFAULT_RATING_TIERS));       changed=true; }
-  if(!db.settings)     { db.settings={ kpiWeightPro:0.7, kpiWeightDisc:0.3, backupIntervalDays:7,
-                           lastBackup:null, adminEmail:'nguyentuananh.emc@gmail.com',
-                           emailjs:{serviceId:'',templateId:'',publicKey:''} }; changed=true; }
-  if(!db.settings.emailjs){ db.settings.emailjs={serviceId:'',templateId:'',publicKey:''}; changed=true; }
-
+  if(!db) return _buildEmptyDB();
+  if(!Array.isArray(db.users))          db.users=[];
+  if(!Array.isArray(db.tasks))          db.tasks=[];
+  if(!Array.isArray(db.kpiEvals))       db.kpiEvals=[];
+  if(!Array.isArray(db.contracts))      db.contracts=[];
+  if(!Array.isArray(db.importSlips))    db.importSlips=[];
+  if(!Array.isArray(db.suppliers))      db.suppliers=[];
+  if(!db.salaryRanks)       db.salaryRanks=JSON.parse(JSON.stringify(DEFAULT_SALARY_RANKS));
+  if(!db.kpiTemplates)      db.kpiTemplates=JSON.parse(JSON.stringify(DEFAULT_KPI_TEMPLATES));
+  if(!db.disciplineTemplate)db.disciplineTemplate=JSON.parse(JSON.stringify(DEFAULT_DISCIPLINE_TEMPLATE));
+  if(!db.ratingTiers)       db.ratingTiers=JSON.parse(JSON.stringify(DEFAULT_RATING_TIERS));
+  if(!db.settings)          db.settings={ kpiWeightPro:0.7, kpiWeightDisc:0.3, backupIntervalDays:7,
+                              lastBackup:null, adminEmail:'nguyentuananh.emc@gmail.com',
+                              emailjs:{serviceId:'',templateId:'',publicKey:''} };
+  if(!db.settings.emailjs)  db.settings.emailjs={serviceId:'',templateId:'',publicKey:''};
   db.users.forEach(u=>{
     if(u.role==='admin') return;
     if(!Array.isArray(u.assignments)){
       u.assignments=[];
-      if(u.area){
-        u.assignments.push({
-          area: u.area,
-          salaryRankCode: u.salaryRankCode||'',
-          kpiPct: Number(u.kpiPct)||0,
-          kpiBase: Number(u.baseSalary)||0
-        });
-      }
-      changed=true;
+      if(u.area) u.assignments.push({ area:u.area, salaryRankCode:u.salaryRankCode||'',
+        kpiPct:Number(u.kpiPct)||0, kpiBase:Number(u.baseSalary)||0 });
     }
-    if(u.baseSalary===undefined){ u.baseSalary=0; changed=true; }
-    if(u.allowance===undefined){  u.allowance=0;  changed=true; }
+    if(u.baseSalary===undefined) u.baseSalary=0;
+    if(u.allowance===undefined)  u.allowance=0;
   });
-
-  if(changed) saveDB(db);
   return db;
 }
-function saveDB(db){
-  localStorage.setItem(DB_KEY, JSON.stringify(db));
-  // QUAN TRỌNG: chỉ ghi lên Firebase sau khi đã pull xong
-  // Nếu chưa pull xong mà ghi → sẽ ghi đè dữ liệu rỗng lên dữ liệu thật trên Firebase
-  if(window._firebaseReady && _fbPullDone){
-    clearTimeout(_fbPendingSave);
-    _fbPendingSave = setTimeout(()=>{
-      window._fbSet(FB_PATH, db).catch(e=>console.error('Firebase write err', e));
-    }, 400);
-  }
-}
 
-/* ============================================================
-   FIREBASE SYNC — Khởi tạo kết nối & realtime listener
-   ============================================================ */
-
-/* Pull dữ liệu từ Firebase một lần (khi khởi động) */
+/* Pull Firebase → nạp vào _db */
 async function fbPullOnce(){
   try{
     const data = await window._fbGet(FB_PATH);
-    if(data && data.users){
-      const migrated = migrateDB(data);
-      localStorage.setItem(DB_KEY, JSON.stringify(migrated));
-      _fbConnected = true;
-      _fbPullDone  = true;  // từ đây saveDB mới được phép ghi lên Firebase
-      return migrated;
-    }
-  }catch(e){ console.warn('Firebase pull err:', e); }
-  // Pull thất bại (lỗi mạng) → vẫn cho phép ghi để không block người dùng mãi mãi
-  _fbPullDone = true;
-  return null;
+    _db = migrateDB(data || null);
+    _fbConnected = true;
+    return _db;
+  }catch(e){
+    console.warn('Firebase pull err:', e);
+    if(!_db) _db = _buildEmptyDB();
+    // Kể cả khi pull thất bại, vẫn đánh dấu connected để saveDB không bị block
+    _fbConnected = true;
+    return null;
+  }
 }
 
-/* Bật realtime listener — cập nhật localStorage khi có thay đổi từ thiết bị khác */
+/* Realtime listener — nhận thay đổi từ máy khác */
 function fbStartRealtime(){
-  if(_fbSyncHandle) return; // đã bật
-  if(!window._firebaseReady) return;
+  if(_fbSyncHandle || !window._firebaseReady) return;
+  // Đánh dấu thời điểm bật listener — bỏ qua callback đầu tiên (là dữ liệu cũ Firebase fire ngay lập tức)
+  let _firstFire = true;
   _fbSyncHandle = window._fbOn(FB_PATH, (data)=>{
+    if(_firstFire){ _firstFire = false; return; } // bỏ qua fire đầu tiên
     if(!data || !data.users) return;
-    const cur = JSON.stringify(getDB());
-    const nxt = JSON.stringify(data);
-    if(cur !== nxt){
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
-      _fbConnected = true;
-      // Popup window (có ?openContract) → re-render nội dung popup
-      if(_popupCid){
-        renderFileStatusBar();
-        renderPopupBody();
-      // Trang chính → re-render view hiện tại
-      } else if(currentUser()){
-        renderFileStatusBar();
-        routeTo(currentView);
-      }
+    _db = migrateDB(data);
+    _fbConnected = true;
+    if(typeof _popupCid !== 'undefined' && _popupCid){
+      renderFileStatusBar(); renderPopupBody();
+    } else if(currentUser()){
+      renderFileStatusBar(); routeTo(currentView);
     }
   });
 }
 
-/* Ngắt realtime */
 function fbStopRealtime(){
   if(_fbSyncHandle){ window._fbOff(_fbSyncHandle); _fbSyncHandle=null; }
   _fbConnected = false;
 }
 
-/* Dùng cho nút "Sync ngay" thủ công */
 window.syncFirebaseNow = async function(){
   try{
-    const db=getDB();
-    await window._fbSet(FB_PATH, db);
+    await window._fbSet(FB_PATH, getDB());
     _fbConnected = true; renderFileStatusBar();
     toast('✅ Đã đồng bộ lên Firebase','success');
-  }catch(e){ toast('❌ Lỗi đồng bộ Firebase: '+e.message,'error'); }
-};
-
-/* Kéo dữ liệu mới nhất từ Firebase xuống */
-window.pullFirebaseNow = async function(){
-  try{
-    const data = await fbPullOnce();
-    if(data){ render(); toast('✅ Đã tải dữ liệu mới nhất từ Firebase','success'); }
-    else toast('Firebase chưa có dữ liệu','warn');
   }catch(e){ toast('❌ Lỗi: '+e.message,'error'); }
 };
 
-/* Giả lập tryRestoreDBFile (gọi trong init) — thực ra không cần làm gì */
-async function tryRestoreDBFile(){ /* Firebase tự xử lý */ }
-function initDB(){
-  const db={
-    users:[],
-    tasks:[],         // nhiệm vụ phân công
-    kpiEvals:[],      // bản ghi đánh giá KPI
-    contracts:[],     // QUẢN LÝ HỢP ĐỒNG
-    importSlips:[],   // phiếu nhập vật tư
-    suppliers:[],     // nhà cung cấp
-    salaryRanks: JSON.parse(JSON.stringify(DEFAULT_SALARY_RANKS)),
-    kpiTemplates: JSON.parse(JSON.stringify(DEFAULT_KPI_TEMPLATES)),
-    disciplineTemplate: JSON.parse(JSON.stringify(DEFAULT_DISCIPLINE_TEMPLATE)),
-    ratingTiers: JSON.parse(JSON.stringify(DEFAULT_RATING_TIERS)),
-    settings:{
-      kpiWeightPro: 0.7,
-      kpiWeightDisc: 0.3,
-      backupIntervalDays: 7,
-      lastBackup: null,
-      adminEmail: 'nguyentuananh.emc@gmail.com',
-      emailjs:{ serviceId:'', templateId:'', publicKey:'' }
-    },
-    initialized:true,
-    version:1
-  };
-  saveDB(db);
-  return db;
-}
+window.pullFirebaseNow = async function(){
+  const data = await fbPullOnce();
+  if(data){ render(); toast('✅ Đã tải dữ liệu mới nhất','success'); }
+  else toast('Firebase chưa có dữ liệu','warn');
+};
+
+async function tryRestoreDBFile(){ /* không dùng */ }
 function uid(prefix='id'){ return prefix+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
 
 /* ---------- Hash mật khẩu (SHA-256) ---------- */
@@ -3378,11 +3328,9 @@ window.saveBackupCfg = function(){
 window.resetAllData = async function(){
   if(!confirm('XÓA TOÀN BỘ dữ liệu? Bắt buộc phải khởi tạo lại từ đầu!')) return;
   if(!confirm('Xác nhận lần cuối — không thể hoàn tác!')) return;
-  // Dừng realtime listener trước để tránh Firebase kéo dữ liệu cũ xuống lại ngay sau khi xóa
   fbStopRealtime();
-  localStorage.removeItem(DB_KEY);
+  _db = null;
   Session.clear();
-  // Xóa luôn trên Firebase — nếu chỉ xóa localStorage, listener sẽ kéo dữ liệu cũ xuống lại
   if(window._firebaseReady){
     try{ await window._fbSet(FB_PATH, null); }catch(e){ console.error('Firebase reset err',e); }
   }
@@ -7208,30 +7156,25 @@ window.assignPcccTaskDyn = function(cid, scope, itemId){
   try{
     const fbData = await Promise.race([
       _waitFirebase().then(() => fbPullOnce()),
-      // Timeout 8 giây: nếu mạng quá chậm/lỗi → fallback về localStorage cache
       new Promise((_,rej) => setTimeout(()=>rej(new Error('timeout')), 8000))
     ]);
     if(fbData) _fbConnected = true;
   }catch(e){
-    // Hết timeout hoặc lỗi mạng → dùng cache localStorage, vẫn tiếp tục
+    // Timeout hoặc lỗi mạng → _db rỗng, vẫn tiếp tục
     const msgEl = document.getElementById('fb-loading-msg');
-    if(msgEl) msgEl.textContent = 'Không kết nối được Firebase — dùng dữ liệu cục bộ…';
-    await new Promise(r => setTimeout(r, 1200)); // Cho người dùng đọc thông báo
+    if(msgEl) msgEl.textContent = 'Không kết nối được Firebase — vui lòng kiểm tra mạng…';
+    await new Promise(r => setTimeout(r, 1200));
+    if(!_db) _db = _buildEmptyDB();
+    _fbConnected = true; // cho phép ghi khi có kết nối lại
   }
 
-  // Bật realtime listener để nhận thay đổi từ các máy khác
+  // Bật realtime listener — bỏ qua fire đầu tiên (đã pull xong ở trên rồi)
   fbStartRealtime();
 
   if(popupContractId){
-    // Cửa sổ popup: Firebase đã pull xong ở trên → dữ liệu đã có trong localStorage
-    // Nếu vẫn không tìm thấy → thử pull thêm 1 lần nữa (phòng trường hợp timeout lần đầu)
-    const db = getDB();
-    const found = db.contracts && db.contracts.find(x=>x.id===popupContractId);
+    const found = _db && _db.contracts && _db.contracts.find(x=>x.id===popupContractId);
     if(!found && window._firebaseReady){
-      try{
-        const retry = await fbPullOnce();
-        if(retry) _fbConnected = true;
-      }catch(e){}
+      try{ await fbPullOnce(); }catch(e){}
     }
     renderContractPopupWindow(popupContractId);
   } else {
