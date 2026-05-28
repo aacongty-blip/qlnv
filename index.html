@@ -6,6 +6,35 @@
 <title>EMC · AA · TẢN VIÊN | Quản lý nhân sự</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<!-- Firebase SDK (compat — chạy đồng bộ với script thường, không bị vấn đề timing của type=module) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script>
+  // Khởi tạo Firebase ngay sau khi SDK load xong
+  // Dùng defer-pattern: nếu SDK chưa có (hiếm) thì đánh dấu chờ
+  function _initFirebase(){
+    try{
+      const _app = firebase.initializeApp({
+        databaseURL: "https://qlnv-app-default-rtdb.asia-southeast1.firebasedatabase.app/"
+      });
+      const _db = firebase.database();
+      window._fbSet = (path, val) => _db.ref(path).set(val);
+      window._fbGet = (path) => _db.ref(path).get().then(s => s.val());
+      window._fbOn  = (path, cb) => { const r = _db.ref(path); r.on('value', s => cb(s.val())); return r; };
+      window._fbOff = (r) => r.off();
+      window._firebaseReady = true;
+    }catch(e){
+      console.error('Firebase init error:', e);
+      window._firebaseReady = false;
+    }
+  }
+  if(typeof firebase !== 'undefined'){
+    _initFirebase();
+  } else {
+    // SDK chưa load xong — chờ
+    window.addEventListener('load', _initFirebase);
+  }
+</script>
 <!-- PDF.js & Tesseract.js — tải lazy khi import vật tư từ PDF/ảnh -->
 <script>
   // Tải lazy để không làm chậm khởi động phần mềm
@@ -260,31 +289,66 @@ const DEFAULT_RATING_TIERS = [
 ];
 
 /* ============================================================
-   DATA LAYER – Firebase Realtime Database (không dùng localStorage)
+   DATA LAYER – Firebase Realtime Database
+   ✓ Dữ liệu đồng bộ realtime qua Firebase, không lệ thuộc trình duyệt
+   ✓ Giữ bản cache trong localStorage để offline / tốc độ
    ============================================================ */
+const DB_KEY='HRM_EMC_DB_v1';
 const SESSION_KEY='HRM_EMC_SESSION_v1';
+const FB_PATH = 'hrm';   // đường dẫn gốc trên Firebase
 
-// RAM cache — toàn bộ dữ liệu giữ trong biến này
-let _dbCache = null;
+/* ---------- Firebase trạng thái kết nối ---------- */
+let _fbSyncHandle = null;   // ref đang lắng nghe realtime
+let _fbConnected  = false;
+let _fbPendingSave = null;  // debounce write
+let _fbPullDone   = false;  // chặn ghi Firebase trước khi pull xong — tránh ghi đè dữ liệu thật
 
-// Expose để Firebase module có thể set
-Object.defineProperty(window, '_dbCache', {
-  get(){ return _dbCache; },
-  set(v){ _dbCache = v; }
-});
-
-function getDB(){
-  if(_dbCache) return _dbCache;
-  return initDB();
+/* Chờ Firebase SDK khởi tạo xong (polling mỗi 50ms, tối đa 10 giây) */
+function _waitFirebase(){
+  return new Promise((resolve, reject) => {
+    if(window._firebaseReady){ resolve(); return; }
+    const start = Date.now();
+    const check = setInterval(()=>{
+      if(window._firebaseReady){
+        clearInterval(check); resolve();
+      } else if(Date.now() - start > 10000){
+        clearInterval(check); reject(new Error('Firebase SDK timeout'));
+      }
+    }, 50);
+  });
 }
-// Expose ra window để Firebase module gọi được
-window.getDB = getDB;
 
+/* ---------- Đọc DB: ưu tiên cache localStorage, sau đó pull Firebase ---------- */
+function getDB(){
+  try{
+    const raw=localStorage.getItem(DB_KEY);
+    if(!raw) return initDB();
+    const db = JSON.parse(raw);
+    return migrateDB(db);
+  }catch(e){ return initDB(); }
+}
 /* ---------- Di trú dữ liệu: hỗ trợ NV đa nhiệm (assignments) ---------- */
 function migrateDB(db){
   if(!db) return initDB();
   let changed=false;
-  (db.users||[]).forEach(u=>{
+
+  // Đảm bảo tất cả collection cơ bản luôn tồn tại (dù Firebase thiếu field)
+  if(!Array.isArray(db.users)){          db.users=[];             changed=true; }
+  if(!Array.isArray(db.tasks)){          db.tasks=[];             changed=true; }
+  if(!Array.isArray(db.kpiEvals)){       db.kpiEvals=[];          changed=true; }
+  if(!Array.isArray(db.contracts)){      db.contracts=[];         changed=true; }
+  if(!Array.isArray(db.importSlips)){    db.importSlips=[];       changed=true; }
+  if(!Array.isArray(db.suppliers)){      db.suppliers=[];         changed=true; }
+  if(!db.salaryRanks)  { db.salaryRanks=JSON.parse(JSON.stringify(DEFAULT_SALARY_RANKS));       changed=true; }
+  if(!db.kpiTemplates) { db.kpiTemplates=JSON.parse(JSON.stringify(DEFAULT_KPI_TEMPLATES));     changed=true; }
+  if(!db.disciplineTemplate){ db.disciplineTemplate=JSON.parse(JSON.stringify(DEFAULT_DISCIPLINE_TEMPLATE)); changed=true; }
+  if(!db.ratingTiers)  { db.ratingTiers=JSON.parse(JSON.stringify(DEFAULT_RATING_TIERS));       changed=true; }
+  if(!db.settings)     { db.settings={ kpiWeightPro:0.7, kpiWeightDisc:0.3, backupIntervalDays:7,
+                           lastBackup:null, adminEmail:'nguyentuananh.emc@gmail.com',
+                           emailjs:{serviceId:'',templateId:'',publicKey:''} }; changed=true; }
+  if(!db.settings.emailjs){ db.settings.emailjs={serviceId:'',templateId:'',publicKey:''}; changed=true; }
+
+  db.users.forEach(u=>{
     if(u.role==='admin') return;
     if(!Array.isArray(u.assignments)){
       u.assignments=[];
@@ -299,158 +363,96 @@ function migrateDB(db){
       changed=true;
     }
     if(u.baseSalary===undefined){ u.baseSalary=0; changed=true; }
-    if(u.allowance===undefined){ u.allowance=0; changed=true; }
+    if(u.allowance===undefined){  u.allowance=0;  changed=true; }
   });
-  if(!Array.isArray(db.contracts)){ db.contracts=[]; changed=true; }
-  if(!Array.isArray(db.importSlips)){ db.importSlips=[]; changed=true; }
-  if(!Array.isArray(db.suppliers)){ db.suppliers=[]; changed=true; }
+
   if(changed) saveDB(db);
   return db;
 }
-
 function saveDB(db){
-  _dbCache = db;
-  // Ghi lên Realtime Database ngay lập tức
-  if(window._fbSaveToRTDB){
-    window._fbSaveToRTDB(db);
+  localStorage.setItem(DB_KEY, JSON.stringify(db));
+  // QUAN TRỌNG: chỉ ghi lên Firebase sau khi đã pull xong
+  // Nếu chưa pull xong mà ghi → sẽ ghi đè dữ liệu rỗng lên dữ liệu thật trên Firebase
+  if(window._firebaseReady && _fbPullDone){
+    clearTimeout(_fbPendingSave);
+    _fbPendingSave = setTimeout(()=>{
+      window._fbSet(FB_PATH, db).catch(e=>console.error('Firebase write err', e));
+    }, 400);
   }
 }
 
 /* ============================================================
-   FILE STORAGE — Lưu CSDL ra file JSON (File System Access API)
-   Mục đích: dữ liệu đi theo PHẦN MỀM (file HRM_EMC_data.json) thay vì
-   bị giam trong trình duyệt. Hỗ trợ Chrome / Edge / Opera ≥ 86.
+   FIREBASE SYNC — Khởi tạo kết nối & realtime listener
    ============================================================ */
-let dbFileHandle = null;
-let dbFileName = '';
-const FILE_HANDLE_DB = 'HRM_EMC_FILEHANDLE_v1'; // IndexedDB store cho file handle
 
-function idbOpen(){
-  return new Promise((resolve,reject)=>{
-    const req=indexedDB.open('HRM_EMC_idb',1);
-    req.onupgradeneeded=()=>{ req.result.createObjectStore('handles'); };
-    req.onsuccess=()=>resolve(req.result);
-    req.onerror=()=>reject(req.error);
+/* Pull dữ liệu từ Firebase một lần (khi khởi động) */
+async function fbPullOnce(){
+  try{
+    const data = await window._fbGet(FB_PATH);
+    if(data && data.users){
+      const migrated = migrateDB(data);
+      localStorage.setItem(DB_KEY, JSON.stringify(migrated));
+      _fbConnected = true;
+      _fbPullDone  = true;  // từ đây saveDB mới được phép ghi lên Firebase
+      return migrated;
+    }
+  }catch(e){ console.warn('Firebase pull err:', e); }
+  // Pull thất bại (lỗi mạng) → vẫn cho phép ghi để không block người dùng mãi mãi
+  _fbPullDone = true;
+  return null;
+}
+
+/* Bật realtime listener — cập nhật localStorage khi có thay đổi từ thiết bị khác */
+function fbStartRealtime(){
+  if(_fbSyncHandle) return; // đã bật
+  if(!window._firebaseReady) return;
+  _fbSyncHandle = window._fbOn(FB_PATH, (data)=>{
+    if(!data || !data.users) return;
+    const cur = JSON.stringify(getDB());
+    const nxt = JSON.stringify(data);
+    if(cur !== nxt){
+      localStorage.setItem(DB_KEY, JSON.stringify(data));
+      _fbConnected = true;
+      // Popup window (có ?openContract) → re-render nội dung popup
+      if(_popupCid){
+        renderFileStatusBar();
+        renderPopupBody();
+      // Trang chính → re-render view hiện tại
+      } else if(currentUser()){
+        renderFileStatusBar();
+        routeTo(currentView);
+      }
+    }
   });
 }
-async function idbSaveHandle(handle){
-  try{
-    const db=await idbOpen();
-    const tx=db.transaction('handles','readwrite');
-    tx.objectStore('handles').put(handle,'dbfile');
-    await new Promise(r=>tx.oncomplete=r);
-  }catch(e){ console.error(e); }
-}
-async function idbLoadHandle(){
-  try{
-    const db=await idbOpen();
-    return await new Promise((res,rej)=>{
-      const r=db.transaction('handles').objectStore('handles').get('dbfile');
-      r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
-    });
-  }catch(e){ return null; }
-}
-async function idbClearHandle(){
-  try{
-    const db=await idbOpen();
-    const tx=db.transaction('handles','readwrite');
-    tx.objectStore('handles').delete('dbfile');
-    await new Promise(r=>tx.oncomplete=r);
-  }catch(e){}
+
+/* Ngắt realtime */
+function fbStopRealtime(){
+  if(_fbSyncHandle){ window._fbOff(_fbSyncHandle); _fbSyncHandle=null; }
+  _fbConnected = false;
 }
 
-function fsaSupported(){ return !!(window.showOpenFilePicker && window.showSaveFilePicker); }
-
-async function verifyPermission(handle, write){
+/* Dùng cho nút "Sync ngay" thủ công */
+window.syncFirebaseNow = async function(){
   try{
-    const opts = write ? {mode:'readwrite'} : {};
-    if((await handle.queryPermission(opts))==='granted') return true;
-    if((await handle.requestPermission(opts))==='granted') return true;
-  }catch(e){}
-  return false;
-}
-
-async function writeToDBFile(){
-  if(!dbFileHandle) return false;
-  if(!(await verifyPermission(dbFileHandle,true))) return false;
-  try{
-    const w = await dbFileHandle.createWritable();
-    const json = localStorage.getItem(DB_KEY) || '{}';
-    await w.write(json);
-    await w.close();
-    return true;
-  }catch(e){ console.error('write fail',e); return false; }
-}
-
-async function readFromDBFile(){
-  if(!dbFileHandle) return null;
-  if(!(await verifyPermission(dbFileHandle,false))) return null;
-  try{
-    const f = await dbFileHandle.getFile();
-    const txt = await f.text();
-    if(!txt.trim()) return null;
-    return JSON.parse(txt);
-  }catch(e){ console.error('read fail',e); return null; }
-}
-
-/* Kết nối file CSDL có sẵn (mở) */
-window.connectDBFileOpen = async function(){
-  if(!fsaSupported()){ toast('Trình duyệt chưa hỗ trợ File System Access API. Hãy dùng Chrome/Edge mới nhất.','error'); return; }
-  try{
-    const [h] = await window.showOpenFilePicker({
-      types:[{description:'HRM-EMC Database', accept:{'application/json':['.json']}}],
-      multiple:false
-    });
-    if(!h) return;
-    dbFileHandle=h; dbFileName=h.name;
-    await idbSaveHandle(h);
-    const data = await readFromDBFile();
-    if(data && data.users){
-      localStorage.setItem(DB_KEY, JSON.stringify(data));
-      toast('✅ Đã tải dữ liệu từ file: '+h.name);
-    }else{
-      // File rỗng → ghi DB hiện tại ra
-      await writeToDBFile();
-      toast('✅ Đã kết nối file CSDL: '+h.name);
-    }
-    render();
-  }catch(e){ if(e.name!=='AbortError') toast('Lỗi: '+e.message,'error'); }
+    const db=getDB();
+    await window._fbSet(FB_PATH, db);
+    _fbConnected = true; renderFileStatusBar();
+    toast('✅ Đã đồng bộ lên Firebase','success');
+  }catch(e){ toast('❌ Lỗi đồng bộ Firebase: '+e.message,'error'); }
 };
 
-/* Tạo file CSDL mới (Save As) */
-window.connectDBFileCreate = async function(){
-  if(!fsaSupported()){ toast('Trình duyệt chưa hỗ trợ File System Access API. Hãy dùng Chrome/Edge mới nhất.','error'); return; }
+/* Kéo dữ liệu mới nhất từ Firebase xuống */
+window.pullFirebaseNow = async function(){
   try{
-    const h = await window.showSaveFilePicker({
-      suggestedName:'HRM_EMC_data.json',
-      types:[{description:'HRM-EMC Database', accept:{'application/json':['.json']}}]
-    });
-    dbFileHandle=h; dbFileName=h.name;
-    await idbSaveHandle(h);
-    await writeToDBFile();
-    toast('✅ Đã tạo & kết nối file CSDL: '+h.name);
-    render();
-  }catch(e){ if(e.name!=='AbortError') toast('Lỗi: '+e.message,'error'); }
+    const data = await fbPullOnce();
+    if(data){ render(); toast('✅ Đã tải dữ liệu mới nhất từ Firebase','success'); }
+    else toast('Firebase chưa có dữ liệu','warn');
+  }catch(e){ toast('❌ Lỗi: '+e.message,'error'); }
 };
 
-/* Ngắt kết nối */
-window.disconnectDBFile = async function(){
-  if(!confirm('Ngắt kết nối file CSDL? Dữ liệu vẫn còn trong trình duyệt nhưng không tự đồng bộ ra file nữa.')) return;
-  dbFileHandle=null; dbFileName='';
-  await idbClearHandle();
-  toast('Đã ngắt kết nối file CSDL','info');
-  render();
-};
-
-/* Cố gắng khôi phục handle khi mở phần mềm */
-async function tryRestoreDBFile(){
-  if(!fsaSupported()) return;
-  const h = await idbLoadHandle();
-  if(!h) return;
-  // Quyền cần user gesture → lưu handle, chờ user click "Kết nối lại"
-  dbFileHandle = h;
-  dbFileName = h.name || '';
-}
+/* Giả lập tryRestoreDBFile (gọi trong init) — thực ra không cần làm gì */
+async function tryRestoreDBFile(){ /* Firebase tự xử lý */ }
 function initDB(){
   const db={
     users:[],
@@ -754,20 +756,24 @@ function render(){
   root.appendChild(app);
   routeTo(currentView);
 }
-window.render = render;
 function renderFileStatusBar(){
   const host=document.getElementById('file-status-bar');
   if(!host) return;
-  host.innerHTML = `<div style="padding:6px 16px;background:#0f766e;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
-    <span>🔥 Dữ liệu đang lưu trên <b>Firebase Cloud</b> · Đồng bộ realtime cho tất cả người dùng</span>
-    <span id="fb-sync-status" style="font-size:11px;opacity:.8">✅ Đã kết nối</span>
-  </div>`;
+  if(_fbConnected){
+    host.innerHTML = `<div style="padding:8px 16px;background:#16a34a;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+      <span>☁️ Dữ liệu đang đồng bộ <b>Firebase Realtime Database</b> · Tất cả thiết bị đều nhận dữ liệu mới nhất.</span>
+      <span>
+        <button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="syncFirebaseNow()">⟳ Ghi ngay</button>
+        <button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="pullFirebaseNow()">⬇ Kéo xuống</button>
+      </span>
+    </div>`;
+  } else {
+    host.innerHTML = `<div style="padding:8px 16px;background:#f59e0b;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
+      <span>⏳ Đang kết nối Firebase… (Dữ liệu tạm lưu cục bộ)</span>
+      <span><button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="syncFirebaseNow()">⟳ Thử kết nối lại</button></span>
+    </div>`;
+  }
 }
-window.syncDBFileNow = async function(){
-  if(!dbFileHandle){ toast('Chưa kết nối file CSDL','warn'); return; }
-  const ok = await writeToDBFile();
-  toast(ok?'✅ Đã đồng bộ file CSDL':'❌ Lỗi đồng bộ — kiểm tra quyền truy cập file','error');
-};
 function renderNav(u){
   const items=[];
   // "Theo dõi công việc" được đưa lên ĐẦU tab bên trái cho admin/manager/employee
@@ -782,12 +788,21 @@ function renderNav(u){
     items.push({k:'kpi-config', t:'Cấu hình KPI', i:'⚙️'});
     items.push({k:'backup', t:'Sao lưu & Phục hồi', i:'☁️'});
     items.push({k:'settings', t:'Cài đặt hệ thống', i:'🔧'});
-  }else if(u.role==='manager' || u.role==='pm'){
+  }else if(u.role==='pm'){
+    // Quản lý — quyền rộng (gần như Admin, trừ Sao lưu & Cài đặt hệ thống)
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
+    items.push({k:'users', t:'Quản lý nhân sự', i:'👥'});
+    items.push({k:'salary', t:'Cấu hình lương', i:'💰'});
     items.push({k:'kpi', t:'Đánh giá KPI', i:'🎯'});
-    items.push({k:'reports', t:'Báo cáo KPI', i:'📑'});
+    items.push({k:'reports', t:'Báo cáo & Xuất Excel', i:'📑'});
+    items.push({k:'kpi-config', t:'Cấu hình KPI', i:'⚙️'});
+  }else if(u.role==='manager'){
+    // Trưởng phòng — chỉ Theo dõi công việc, Quản lý dự án, Chấm công
+    items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
+    items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
+    items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
   }else if(u.role==='employee'){
     items.push({k:'my-tasks', t:'Theo dõi công việc', i:'📋'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
@@ -803,12 +818,28 @@ function renderNav(u){
 }
 function roleBadge(r){
   if(r==='admin') return '<span class="badge admin">Admin</span>';
-  if(r==='manager') return '<span class="badge manager">Trưởng nhóm</span>';
+  if(r==='manager') return '<span class="badge manager">Trưởng phòng</span>';
   if(r==='pm') return '<span class="badge" style="background:#fce7f3;color:#9d174d">Quản lý</span>';
   return '<span class="badge employee">Nhân viên</span>';
 }
 function roleLabel(r){
-  return ({admin:'Admin', manager:'Trưởng nhóm', pm:'Quản lý', employee:'Nhân viên'})[r] || r;
+  return ({admin:'Admin', manager:'Trưởng phòng', pm:'Quản lý', employee:'Nhân viên'})[r] || r;
+}
+/* ===== Phân quyền truy cập module theo vai trò =====
+   admin   : toàn quyền
+   pm      : Quản lý — Theo dõi công việc, Quản lý dự án, Chấm công, Quản lý nhân sự,
+             Cấu hình lương, Đánh giá KPI, Báo cáo & Xuất Excel, Cấu hình KPI, Đổi mật khẩu
+   manager : Trưởng phòng — Theo dõi công việc, Quản lý dự án, Chấm công, Đổi mật khẩu
+   employee: Nhân viên — Theo dõi công việc, Quản lý dự án (hạn chế), Chấm công,
+             Thông tin cá nhân, KPI của tôi, Đổi mật khẩu */
+const ROLE_VIEWS = {
+  admin:    ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','backup','settings','change-pass'],
+  pm:       ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','change-pass'],
+  manager:  ['tasks','contracts','dashboard','change-pass'],
+  employee: ['my-tasks','contracts','dashboard','my-info','my-kpi','change-pass']
+};
+function canAccessView(role, key){
+  return (ROLE_VIEWS[role]||[]).includes(key);
 }
 function navTo(v){ currentView=v; render(); }
 window.navTo=navTo;
@@ -833,6 +864,11 @@ function routeTo(v){
     'change-pass': viewChangePass,
     'contracts': viewContracts
   };
+  // 🔒 Chặn truy cập view không thuộc quyền của vai trò
+  if(u && !canAccessView(u.role, v)){
+    main.innerHTML='<div class="card"><div class="empty">⛔ Bạn không có quyền truy cập chức năng này.</div></div>';
+    return;
+  }
   const fn=map[v]||viewDashboard;
   main.innerHTML='';
   fn(main, u);
@@ -855,8 +891,8 @@ function renderLogin(){
         <div class="sub">Hệ thống quản lý nhân sự — KPI · Lương · 3 công ty</div>
         <div class="role-pick" id="role-pick">
           <button data-role="admin"><span class="icon">🛡️</span>Admin</button>
-          <button data-role="pm"><span class="icon">💼</span>Quản lý</button>
-          <button data-role="manager"><span class="icon">👔</span>Trưởng nhóm</button>
+          <button data-role="pm"><span class="icon">👔</span>Quản lý</button>
+          <button data-role="manager"><span class="icon">🧑‍💼</span>Trưởng phòng</button>
           <button data-role="employee"><span class="icon">👤</span>Nhân viên</button>
         </div>
         <form id="login-form" novalidate>
@@ -892,7 +928,7 @@ function renderLogin(){
       hint.textContent = adminExists ? '' : 'Đặt mật khẩu khởi tạo cho tài khoản Admin (≥4 ký tự)';
     }else{
       userField.style.display='';
-      hint.textContent = r==='pm' ? 'Đăng nhập với tài khoản Quản lý' : '';
+      hint.textContent='';
     }
   }
   pick.querySelectorAll('button').forEach(b=>b.addEventListener('click',(ev)=>{ev.preventDefault();setRole(b.dataset.role);}));
@@ -934,7 +970,6 @@ function renderLogin(){
     if(role==='admin'){ sugBox.style.display='none'; return; }
     const qLow = (q||'').toLowerCase().trim();
     let list = db.users.filter(u=>u.role===role);
-    // pm không dùng autocomplete (thường ít tài khoản)
     if(qLow) list = list.filter(u=>
       (u.username||'').toLowerCase().includes(qLow) ||
       (u.name||'').toLowerCase().includes(qLow) ||
@@ -1140,7 +1175,7 @@ window.openAttendanceGrid = function(empId, period){
   const isReadOnly = me && me.role==='employee';
   const dayNames = ['CN','T2','T3','T4','T5','T6','T7'];
   const helpText = isReadOnly
-    ? `<div class="help-text">👁 <b>Chế độ chỉ xem.</b> Nhân viên không có quyền tự chấm công — chỉ Trưởng nhóm / Admin được phép chấm. Bảng dưới hiển thị công đã chấm cho bạn trong tháng.</div>`
+    ? `<div class="help-text">👁 <b>Chế độ chỉ xem.</b> Nhân viên không có quyền tự chấm công — chỉ Trưởng phòng / Quản lý / Admin được phép chấm. Bảng dưới hiển thị công đã chấm cho bạn trong tháng.</div>`
     : `<div class="help-text"><b>Click</b> vào ô để chuyển trạng thái: trống → P (công đủ) → H (nửa ngày) → O (phép có lương) → trống.</div>`;
   let html = `${helpText}
     <div style="display:grid;grid-template-columns:repeat(7, 1fr);gap:4px;font-size:11px;font-weight:600;text-align:center;margin-bottom:4px">
@@ -1496,7 +1531,7 @@ window.openUserForm = function(userId){
           <select id="f-role">
             <option value="employee" ${e?.role==='employee'?'selected':''}>Nhân viên</option>
             <option value="pm" ${e?.role==='pm'?'selected':''}>Quản lý</option>
-            <option value="manager" ${e?.role==='manager'?'selected':''}>Trưởng nhóm/phòng</option>
+            <option value="manager" ${e?.role==='manager'?'selected':''}>Trưởng phòng</option>
           </select>
         </div>
         <div class="field"><label>Công ty*</label>
@@ -1792,6 +1827,102 @@ window.saveTiers = function(){
 /* ============================================================
    TASKS — Theo dõi công việc
    ============================================================ */
+/* ============================================================
+   Gom tất cả nội dung CHỜ PHÊ DUYỆT của các dự án mà người dùng
+   phụ trách (Quản lý / Trưởng phòng / Admin) — hiển thị ở đầu
+   mục "Theo dõi công việc". (Yêu cầu 2)
+   ============================================================ */
+function collectAllPendingApprovals(u){
+  const db=getDB();
+  const FOUR_HRS = 4*3600*1000;
+  const now = Date.now();
+  const items = [];
+  (db.contracts||[]).forEach(c=>{
+    if(!canApproveProject(c.id)) return;
+    const projName = escapeHtml(c.code || c.name || '');
+    // 1) Tiến độ công việc chờ xác nhận
+    (db.tasks||[]).filter(t=>t.projectId===c.id && t.pendingProgress!=null).forEach(t=>{
+      const emp=db.users.find(x=>x.id===t.assigneeId);
+      const since=t.pendingAt||now;
+      items.push({type:'progress', proj:projName, projId:c.id,
+        title:`${escapeHtml(t.title)}: ${(t.progress||0).toFixed(0)}% → ${Number(t.pendingProgress).toFixed(0)}%`,
+        sub:`👤 ${escapeHtml(emp?.name||'')}`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+        actionConfirm:`confirmTaskProgress('${t.id}');render()`,
+        actionReject:`rejectTaskProgress('${t.id}');render()`});
+    });
+    // 2) Phiếu nhập chờ xác nhận
+    (db.importSlips||[]).filter(s=>s.contractId===c.id && !s.confirmed).forEach(s=>{
+      const since=s.submittedAt||s.createdAt||now;
+      items.push({type:'slip', proj:projName, projId:c.id,
+        title:`Phiếu nhập ${escapeHtml(s.slipNo||'')} · ${(s.items||[]).length} dòng · ${fmtVND(s.totalValue||0)}`,
+        sub:`👤 ${escapeHtml(s.requesterName||'')} · NCC: ${escapeHtml(s.supplierName||'')}`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+        actionConfirm:`confirmImportSlip('${s.id}','${c.id}');render()`,
+        actionView:`viewSlipDetail('${s.id}')`});
+    });
+    // 3) Hồ sơ kỹ thuật & biên bản chờ xác nhận hoàn thiện + chờ duyệt xóa
+    [['doc', c.pcccDocList], ['rec', c.pcccRecList]].forEach(([scope, list])=>{
+      (list||[]).forEach(it=>{
+        if(it.pendingCompleted && !it.confirmedCompleted){
+          const emp=db.users.find(x=>x.id===it.pendingBy);
+          const since=it.pendingAt||now;
+          items.push({type:scope==='doc'?'doc':'rec', proj:projName, projId:c.id,
+            title:`${scope==='doc'?'📐':'📋'} ${escapeHtml(it.name||'')}`,
+            sub:`👤 ${escapeHtml(emp?.name||'')} đề nghị duyệt hoàn thiện`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+            actionConfirm:`confirmPcccCompleted('${c.id}','${scope}','${it.id}');render()`});
+        }
+        if(it.pendingDelete){
+          const emp=db.users.find(x=>x.id===it.pendingDeleteBy);
+          const since=it.pendingDeleteAt||now;
+          items.push({type:'del', proj:projName, projId:c.id,
+            title:`🗑 Yêu cầu XÓA: ${escapeHtml(it.name||'(chưa đặt tên)')}`,
+            sub:`👤 ${escapeHtml(emp?.name||'')} đề nghị xóa hồ sơ`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+            actionConfirm:`confirmPcccDelete('${c.id}','${scope}','${it.id}');render()`,
+            actionReject:`rejectPcccDelete('${c.id}','${scope}','${it.id}');render()`});
+        }
+      });
+    });
+  });
+  return items;
+}
+function renderAllPendingApprovals(u){
+  const all = collectAllPendingApprovals(u);
+  if(!all.length){
+    return `<div class="card" style="border-left:5px solid #16a34a;background:#f0fdf4">
+      <b style="color:#166534">✅ Không có nội dung nào đang chờ bạn phê duyệt.</b>
+    </div>`;
+  }
+  const overCount = all.filter(x=>x.overTime).length;
+  const typeBadge = (t)=>({
+    progress:'<span class="badge" style="background:#dbeafe;color:#1e40af">Tiến độ</span>',
+    slip:'<span class="badge" style="background:#fed7aa;color:#9a3412">Phiếu nhập</span>',
+    doc:'<span class="badge" style="background:#e0e7ff;color:#3730a3">Hồ sơ KT</span>',
+    rec:'<span class="badge" style="background:#fce7f3;color:#9d174d">Biên bản</span>',
+    del:'<span class="badge" style="background:#fee2e2;color:#991b1b">Xóa HS</span>'
+  }[t]||'');
+  return `<div class="card" style="border-left:5px solid ${overCount?'#dc2626':'#f59e0b'};background:${overCount?'#fee2e2':'#fffbeb'}">
+    <h3 style="margin:0 0 8px 0;color:${overCount?'#991b1b':'#92400e'}">📥 Nội dung chờ phê duyệt — các dự án bạn phụ trách (${all.length})${overCount?` — 🚨 <b>${overCount}</b> quá 4 giờ!`:''}</h3>
+    <div class="tbl-wrap"><table style="font-size:12px">
+      <thead><tr><th>Loại</th><th>Dự án</th><th>Nội dung</th><th>Người gửi</th><th>Đã chờ</th><th></th></tr></thead>
+      <tbody>${all.map(p=>{
+        const hrs=p.elapsed/3600000;
+        const elapsedStr = hrs<1 ? `${Math.round(hrs*60)} phút` : `${hrs.toFixed(1)} giờ`;
+        return `<tr ${p.overTime?'style="background:#fee2e2"':''}>
+          <td>${typeBadge(p.type)}</td>
+          <td><span class="badge co">${p.proj}</span></td>
+          <td><b>${p.title}</b></td>
+          <td class="muted">${p.sub||''}</td>
+          <td style="${p.overTime?'color:#dc2626;font-weight:700':''}">${elapsedStr}${p.overTime?' 🚨':''}</td>
+          <td>
+            ${p.actionConfirm?`<button class="btn sm success" onclick="${p.actionConfirm}">✓ Duyệt</button>`:''}
+            ${p.actionReject?`<button class="btn sm danger" onclick="${p.actionReject}">✗ Từ chối</button>`:''}
+            ${p.actionView?`<button class="btn sm outline" onclick="${p.actionView}">👁 Xem</button>`:''}
+          </td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <div class="hint" style="margin-top:6px">💡 Mở cửa sổ chi tiết của từng dự án để xem đầy đủ. Bấm ✓ Duyệt / ✗ Từ chối ngay tại đây.</div>
+  </div>`;
+}
 function viewTasks(main, u){
   if(u.role==='employee'){ main.innerHTML='<div class="empty">Bạn không có quyền.</div>'; return; }
   const db=getDB();
@@ -1808,6 +1939,8 @@ function viewTasks(main, u){
       </div>
     </div>
     <div class="help-text">Bảng theo dõi toàn bộ công việc đã giao — sắp xếp theo Hạn hoàn thành. Sử dụng <b>ô tìm kiếm nhân viên</b> bên dưới để lọc và xem thống kê công việc của 1 NV cụ thể.</div>
+
+    ${renderAllPendingApprovals(u)}
 
     <!-- 🔎 Search box with autocomplete -->
     <div class="card" style="position:relative;z-index:20">
@@ -1954,7 +2087,6 @@ function checkDeadlineWarning(){
   // Tự đóng sau 30 giây nếu không thao tác
   setTimeout(()=>{ const x=document.getElementById('deadline-warn-popup'); if(x) x.remove(); }, 30000);
 }
-window.checkDeadlineWarning = checkDeadlineWarning;
 
 /* ---------- Autocomplete tìm NV ---------- */
 function getEmpPool(){ return window._taskEmpPool || []; }
@@ -3149,16 +3281,26 @@ function viewBackup(main, u){
   const db=getDB();
   const lastB = db.settings.lastBackup ? new Date(db.settings.lastBackup) : null;
   const nextB = lastB ? new Date(lastB.getTime() + db.settings.backupIntervalDays*86400000) : null;
+  const fbStatusHtml = _fbConnected
+    ? `<div style="padding:10px;background:#dcfce7;border-radius:8px;margin-bottom:10px">
+        ✅ Đang đồng bộ <b>Firebase Realtime Database</b> — dữ liệu an toàn trên đám mây, truy cập từ mọi thiết bị.
+        <div style="margin-top:6px">
+          <button class="btn sm success" onclick="syncFirebaseNow()">⟳ Ghi ngay lên Firebase</button>
+          <button class="btn sm outline" onclick="pullFirebaseNow()" style="margin-left:6px">⬇ Kéo dữ liệu mới nhất</button>
+        </div>
+      </div>`
+    : `<div style="padding:10px;background:#fef3c7;border-radius:8px;margin-bottom:10px">
+        ⏳ Đang chờ kết nối Firebase… Dữ liệu tạm lưu cục bộ.
+        <div style="margin-top:6px"><button class="btn sm warn" onclick="syncFirebaseNow()">⟳ Thử kết nối lại</button></div>
+      </div>`;
   main.innerHTML=`
     <div class="page-head"><h1>☁️ Sao lưu & Phục hồi</h1></div>
     <div class="card">
-      <h3>🔥 Lưu dữ liệu trên Firebase Cloud</h3>
-      <div style="padding:12px;background:#dcfce7;border-radius:8px;margin-bottom:10px">
-        ✅ Dữ liệu đang được lưu trên <b>Firebase Realtime Database</b> · Đồng bộ realtime cho tất cả người dùng · Không phụ thuộc trình duyệt hay thiết bị.
-      </div>
-      <div class="help-text">Mọi thay đổi được tự động đồng bộ lên cloud sau 1.5 giây. Bạn vẫn có thể tải file JSON để backup cục bộ phòng trường hợp khẩn cấp.</div>
+      <h3>☁️ Đồng bộ Firebase Realtime Database</h3>
+      <div class="help-text">Dữ liệu được tự động ghi lên Firebase mỗi khi có thay đổi. Mọi máy tính/thiết bị mở phần mềm này đều nhận dữ liệu mới nhất theo thời gian thực. Không cần kết nối file cục bộ.</div>
+      ${fbStatusHtml}
     </div>
-    <div class="help-text">Hệ thống vẫn hỗ trợ sao lưu thủ công (tải file .json) và phục hồi từ file đã có phòng trường hợp khẩn cấp.</div>
+    <div class="help-text">Ngoài Firebase, hệ thống vẫn hỗ trợ sao lưu thủ công (tải file .json) và phục hồi từ file đã có để đề phòng trường hợp khẩn cấp.</div>
     <div class="stat-grid">
       <div class="stat-card"><div class="label">Sao lưu lần cuối</div><div class="value" style="font-size:16px">${lastB?lastB.toLocaleString('vi-VN'):'Chưa có'}</div></div>
       <div class="stat-card amber"><div class="label">Lần kế tiếp (tự động)</div><div class="value" style="font-size:16px">${nextB?nextB.toLocaleDateString('vi-VN'):'—'}</div></div>
@@ -3233,11 +3375,17 @@ window.saveBackupCfg = function(){
   db.settings.adminEmail=document.getElementById('bk-email').value.trim();
   saveDB(db); toast('Đã lưu cấu hình');
 };
-window.resetAllData = function(){
+window.resetAllData = async function(){
   if(!confirm('XÓA TOÀN BỘ dữ liệu? Bắt buộc phải khởi tạo lại từ đầu!')) return;
   if(!confirm('Xác nhận lần cuối — không thể hoàn tác!')) return;
+  // Dừng realtime listener trước để tránh Firebase kéo dữ liệu cũ xuống lại ngay sau khi xóa
+  fbStopRealtime();
   localStorage.removeItem(DB_KEY);
   Session.clear();
+  // Xóa luôn trên Firebase — nếu chỉ xóa localStorage, listener sẽ kéo dữ liệu cũ xuống lại
+  if(window._firebaseReady){
+    try{ await window._fbSet(FB_PATH, null); }catch(e){ console.error('Firebase reset err',e); }
+  }
   toast('Đã xóa toàn bộ dữ liệu','warn');
   setTimeout(()=>location.reload(), 1200);
 };
@@ -3540,7 +3688,7 @@ window.saveMyTaskProgress = function(taskId){
   t.pendingAt = Date.now();
   t.pendingBy = currentUser()?.id;
   saveDB(db);
-  toast(`Đã gửi cập nhật tiến độ ${val}% — chờ trưởng nhóm xác nhận`,'info');
+  toast(`Đã gửi cập nhật tiến độ ${val}% — chờ cấp quản lý xác nhận`,'info');
   render();
 };
 /* Trưởng nhóm xác nhận tiến độ */
@@ -3821,6 +3969,8 @@ let _contractFilter = null; // contractId nếu lọc
 
 function viewContracts(main, u){
   const isEmployee = u.role==='employee';
+  // NV không được xem tab "Nhập đầu vào" → ép về Dashboard
+  if(isEmployee && _contractSubTab==='input') _contractSubTab='dashboard';
   const sheetLabels = {
     dashboard:'📊 Dashboard quản lý dự án',
     input:'📥 Nhập đầu vào dự án'
@@ -3837,7 +3987,7 @@ function viewContracts(main, u){
     </div>
     <div class="tabs">
       <button class="tab ${_contractSubTab==='dashboard'?'active':''}"  onclick="switchContractTab('dashboard')">📊 Dashboard</button>
-      <button class="tab ${_contractSubTab==='input'?'active':''}"      onclick="switchContractTab('input')">📥 Nhập đầu vào</button>
+      ${isEmployee?'':`<button class="tab ${_contractSubTab==='input'?'active':''}"      onclick="switchContractTab('input')">📥 Nhập đầu vào</button>`}
     </div>
     <div class="help-text">💡 Mỗi dự án có dữ liệu hợp đồng, tiến độ thi công, hồ sơ PCCC, vật tư <b>độc lập</b>. <b>Double-click</b> vào 1 dự án trong dashboard hoặc bảng Nhập đầu vào → phần mềm mở <b>cửa sổ chi tiết có thể điều chỉnh kích thước</b> với đầy đủ các tab quản lý.</div>
     <div id="contract-body"></div>
@@ -3855,6 +4005,8 @@ window.switchContractTab = function(t){
 };
 function renderContractTabBody(){
   const host=document.getElementById('contract-body'); if(!host) return;
+  // NV không được quan sát mục Nhập đầu vào
+  if(currentUser()?.role==='employee' && _contractSubTab==='input') _contractSubTab='dashboard';
   if(_contractSubTab==='dashboard') return renderContractDashboard(host);
   if(_contractSubTab==='input')     return renderContractInputList(host);
   // Mặc định fallback về dashboard
@@ -4059,7 +4211,7 @@ function renderContractPopupWindow(cid){
   const c=db.contracts.find(x=>x.id===cid);
   document.title = 'HĐ: ' + (c?c.name||c.code:'(Không tìm thấy)');
   const root=document.getElementById('root');
-  if(!c){ root.innerHTML='<div class="empty" style="padding:60px"><h2>❌ Hợp đồng không tồn tại</h2><p>Có thể HĐ đã bị xóa.</p></div>'; return; }
+  if(!c){ root.innerHTML='<div class="empty" style="padding:60px"><h2>❌ Không tìm thấy dự án</h2><p>Dự án có thể đã bị xóa, hoặc chưa đồng bộ từ Firebase.</p><p style="margin-top:12px"><button class="btn outline" onclick="location.reload()">🔄 Thử tải lại</button></p></div>'; return; }
   root.innerHTML = `
     <div style="padding:14px 20px;background:linear-gradient(135deg,#1e3a8a,#0f172a);color:#fff">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
@@ -4087,7 +4239,6 @@ function renderContractPopupWindow(cid){
   `;
   switchPopupTab('progress');
 }
-window.renderContractPopupWindow = renderContractPopupWindow;
 window.switchPopupTab = function(t){
   _popupTab = t;
   const labels = {
@@ -4145,6 +4296,7 @@ function renderMatSubBody(cid){
 /* --- TAB 1: Thông tin HĐ --- */
 function renderPopupInfo(host, cid){
   const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  const isEmp = currentUser()?.role==='employee';
   const cc=contractCalc(c);
   const docs = CONTRACT_DOC_TYPES.map(t=>{
     const url = (c.driveLinks||{})[t.key]||'';
@@ -4206,6 +4358,13 @@ function renderPopupInfo(host, cid){
       <table style="font-size:12px">${docs}</table>
       ${c.note?`<h3>📝 Ghi chú</h3><div>${escapeHtml(c.note)}</div>`:''}
     </div>
+    ${isEmp ? `
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <span style="flex:1"></span>
+      <button class="btn danger" onclick="closeProjectWindow()">✗ Đóng cửa sổ</button>
+    </div>
+    <div class="warn-text" style="margin-top:8px">👁 <b>Chế độ theo dõi:</b> Bạn chỉ được xem thông tin dự án &amp; hợp đồng. Không được cập nhật dự án hoặc xuất ra file.</div>
+    ` : `
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn success" style="font-size:14px;padding:11px 22px" onclick="openContractForm('${c.id}')">💾 Cập nhật dự án</button>
       <span style="flex:1"></span>
@@ -4216,6 +4375,7 @@ function renderPopupInfo(host, cid){
       <button class="btn danger" onclick="closeProjectWindow()">✗ Đóng cửa sổ</button>
     </div>
     <div class="warn-text" style="margin-top:8px">💡 <b>Quy trình:</b> Bấm <b>"💾 Cập nhật dự án"</b> để mở form chỉnh sửa toàn bộ thông tin — sau khi <b>Lưu</b> thay đổi mới được ghi vào CSDL. Sau đó bạn có thể bấm <b>"✗ Đóng cửa sổ"</b> hoặc tiếp tục làm việc.</div>
+    `}
   `;
 }
 window.closeProjectWindow = function(){
@@ -4230,6 +4390,7 @@ let _matEditing = new Set();    // tập material id đang edit
 
 function renderPopupMaterials(host, cid){
   const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  const isEmp = currentUser()?.role==='employee';
   const materials = c.materials||[];
   const rows = materials.map((m,i)=>{
     const imported = getImportedQty(cid, m.id);
@@ -4266,7 +4427,7 @@ function renderPopupMaterials(host, cid){
       </tr>`;
     }
     return `<tr>
-      <td><input type="checkbox" class="mat-chk" data-mid="${m.id}"></td>
+      <td>${isEmp?'':`<input type="checkbox" class="mat-chk" data-mid="${m.id}">`}</td>
       <td>${i+1}</td>
       <td>${escapeHtml(m.name)}</td>
       <td>${escapeHtml(m.unit||'')}</td>
@@ -4296,11 +4457,11 @@ function renderPopupMaterials(host, cid){
 
   host.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-      <h3 style="margin:0">📦 Phụ lục vật tư (${materials.length} mục)</h3>
-      <div>
+      <h3 style="margin:0">📦 Phụ lục vật tư (${materials.length} mục)${isEmp?' <span class="muted" style="font-size:12px;font-weight:400">— chỉ xem</span>':''}</h3>
+      ${isEmp?'':`<div>
         <button class="btn sm" onclick="smartImportMaterials('${cid}')">🤖 Import thông minh từ Excel/PDF/Ảnh</button>
         <button class="btn sm success" onclick="openContractForm('${cid}')">✏ Mở form đầy đủ</button>
-      </div>
+      </div>`}
     </div>
     <!-- TỔNG GIÁ TRỊ phụ lục — trên cùng -->
     <div class="card" style="background:linear-gradient(135deg,#1e3a8a,#3b82f6);color:#fff;margin-bottom:10px">
@@ -4310,7 +4471,7 @@ function renderPopupMaterials(host, cid){
         <div><div style="font-size:11px;opacity:.85">CÒN LẠI PHẢI NHẬP</div><div style="font-size:22px;font-weight:700">${fmtVND(Math.round(totalContractValue - totalImportedValue))}</div></div>
       </div>
     </div>
-    <div class="card" style="padding:10px;margin-bottom:10px;background:#f1f5f9">
+    ${isEmp?'':`<div class="card" style="padding:10px;margin-bottom:10px;background:#f1f5f9">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div>
           <label style="display:inline;margin-right:10px"><input type="checkbox" id="mat-chk-all" onclick="toggleAllMatChk()"> Chọn tất cả</label>
@@ -4324,8 +4485,8 @@ function renderPopupMaterials(host, cid){
                <button class="btn sm danger" onclick="deleteSelectedMats('${cid}')">🗑 Xóa các dòng đã chọn</button>`}
         </div>
       </div>
-    </div>
-    <div class="warn-text">⚠ Cảnh báo trực tiếp: (1) SL đã nhập vượt SL HĐ; (2) Đơn giá nhập TB cao hơn đơn giá HĐ — ô tô đỏ. 💡 Tích checkbox đầu dòng để chọn các vật tư cần sửa/xóa.</div>
+    </div>`}
+    <div class="warn-text">⚠ Cảnh báo trực tiếp: (1) SL đã nhập vượt SL HĐ; (2) Đơn giá nhập TB cao hơn đơn giá HĐ — ô tô đỏ.${isEmp?' 👁 Bạn chỉ được xem phụ lục vật tư, không được sửa/xóa.':' 💡 Tích checkbox đầu dòng để chọn các vật tư cần sửa/xóa.'}</div>
     <div class="tbl-wrap"><table style="font-size:12px" id="mat-tbl">
       <thead><tr>
         <th style="width:30px"></th>
@@ -4404,6 +4565,7 @@ window.deleteSelectedMats = function(cid){
 function renderPopupSlips(host, cid){
   const db=getDB();
   const me=currentUser();
+  const isEmp = me?.role==='employee';
   const canAppr = canApprove();
   const slips = db.importSlips.filter(s=>s.contractId===cid).sort((a,b)=>(b.date||0)-(a.date||0));
   const pendingCount = slips.filter(s=>!s.confirmed).length;
@@ -4428,8 +4590,8 @@ function renderPopupSlips(host, cid){
         ${exportEnabled ? `<button class="btn sm outline" onclick="exportImportSlipExcel('${s.id}')">📊 Excel</button>` : `<button class="btn sm outline" disabled title="Chỉ xuất được khi phiếu đã xác nhận" style="opacity:.5;cursor:not-allowed">📊 Excel</button>`}
         ${exportEnabled ? `<button class="btn sm outline" onclick="exportImportSlipWord('${s.id}')">📝 Word</button>` : ''}
         ${exportEnabled ? `<button class="btn sm outline" onclick="printImportSlipPDF('${s.id}')">📄 PDF</button>` : ''}
-        <button class="btn sm outline" onclick="openImportSlipForm('${cid}','${s.id}')">✏ Sửa</button>
-        <button class="btn sm danger" onclick="deleteImportSlipPopup('${s.id}','${cid}')">🗑</button>
+        ${(!isEmp || !confirmed) ? `<button class="btn sm outline" onclick="openImportSlipForm('${cid}','${s.id}')">✏ Sửa</button>` : ''}
+        ${(!isEmp || !confirmed) ? `<button class="btn sm danger" onclick="deleteImportSlipPopup('${s.id}','${cid}')">🗑</button>` : ''}
       </td>
     </tr>`;
   }).join('') || '<tr><td colspan="8" class="empty">Chưa có phiếu nhập nào cho dự án này</td></tr>';
@@ -4441,7 +4603,7 @@ function renderPopupSlips(host, cid){
         <button class="btn sm" onclick="importSlipFromFile('${cid}')">📊 Import từ Excel</button>
       </div>
     </div>
-    ${pendingCount>0 ? `<div class="warn-text">⏳ Có <b>${pendingCount}</b> phiếu nhập đang chờ xác nhận. ${canAppr?'Bấm <b>✓ Xác nhận</b> để duyệt phiếu — chỉ khi xác nhận, phiếu mới được xuất Excel/Word/PDF và SL nhập mới cộng dồn vào phụ lục vật tư.':'Trưởng nhóm/Admin cần xác nhận phiếu trước khi xuất file và cập nhật SL.'}</div>`:''}
+    ${pendingCount>0 ? `<div class="warn-text">⏳ Có <b>${pendingCount}</b> phiếu nhập đang chờ xác nhận. ${canAppr?'Bấm <b>✓ Xác nhận</b> để duyệt phiếu — chỉ khi xác nhận, phiếu mới được xuất Excel/Word/PDF và SL nhập mới cộng dồn vào phụ lục vật tư.':'Trưởng phòng/Quản lý/Admin cần xác nhận phiếu trước khi xuất file và cập nhật SL.'}</div>`:''}
     <div class="tbl-wrap"><table>
       <thead><tr><th>Số phiếu</th><th>Ngày nhập</th><th>NCC</th><th>Người đề nghị</th><th>Số dòng</th><th>Giá trị</th><th>Trạng thái</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
@@ -4553,12 +4715,13 @@ window.viewSlipDetail = function(slipId){
 /* --- TAB 4: Vật tư phát sinh — chỉ của HĐ này --- */
 function renderPopupExtras(host, cid){
   const db=getDB();
+  const isEmp = currentUser()?.role==='employee';
   const slips = db.importSlips.filter(s=>s.contractId===cid);
   const extras = [];
   slips.forEach(s=>(s.items||[]).filter(it=>it.isExtra).forEach(it=>extras.push({...it, slip:s})));
   host.innerHTML=`
-    <h3 style="margin:0 0 8px">⚠ Vật tư phát sinh của HĐ này (${extras.length})</h3>
-    <div class="help-text">Tự động liệt kê các vật tư nhập qua phiếu nhập nhưng <b>không có trong phụ lục HĐ</b>. Nhấn nút bên dưới để bổ sung vào phụ lục.</div>
+    <h3 style="margin:0 0 8px">⚠ Vật tư phát sinh của HĐ này (${extras.length})${isEmp?' <span class="muted" style="font-size:12px;font-weight:400">— chỉ xem</span>':''}</h3>
+    <div class="help-text">Tự động liệt kê các vật tư nhập qua phiếu nhập nhưng <b>không có trong phụ lục HĐ</b>.${isEmp?' 👁 Bạn chỉ được theo dõi, không chỉnh sửa.':' Nhấn nút bên dưới để bổ sung vào phụ lục.'}</div>
     <div class="tbl-wrap"><table>
       <thead><tr><th>Phiếu nhập</th><th>Ngày</th><th>Tên vật tư</th><th>ĐVT</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th><th>NCC</th><th></th></tr></thead>
       <tbody>${extras.map((x,i)=>`<tr>
@@ -4570,7 +4733,7 @@ function renderPopupExtras(host, cid){
         <td class="right">${fmtVND(x.unitPrice)}</td>
         <td class="right">${fmtVND(x.qty*x.unitPrice)}</td>
         <td>${escapeHtml(x.slip.supplierName||'')}</td>
-        <td><button class="btn sm" onclick="promoteExtraToMaterial('${cid}','${x.slip.id}',${i})">+ Thêm vào phụ lục</button></td>
+        <td>${isEmp?'':`<button class="btn sm" onclick="promoteExtraToMaterial('${cid}','${x.slip.id}',${i})">+ Thêm vào phụ lục</button>`}</td>
       </tr>`).join('') || '<tr><td colspan="9" class="empty">Không có vật tư phát sinh</td></tr>'}</tbody>
     </table></div>
   `;
@@ -4627,9 +4790,7 @@ function renderPopupSuppliers(host, cid){
 
 /* ---------- Mở 1 HĐ trong CỬA SỔ MỚI có thể thay đổi kích thước ---------- */
 window.openContractWindow = function(cid){
-  const c = getDB().contracts.find(x=>x.id===cid);
-  if(!c){ toast('Không tìm thấy HĐ','error'); return; }
-  // Đường dẫn cùng file HTML, thêm ?openContract=ID → trang sẽ tự route vào view popup
+  // Không kiểm tra localStorage ở đây vì có thể chưa đồng bộ — để popup tự pull Firebase
   const url = location.pathname + '?openContract=' + encodeURIComponent(cid);
   const w = window.open(url, 'contract_'+cid,
     'width=1400,height=900,resizable=yes,scrollbars=yes,menubar=no,toolbar=no');
@@ -4706,14 +4867,15 @@ window.showContractDetail = function(contractId){
         ${(c.payments&&c.payments.length)?`
         <h3>💳 Lịch sử thanh toán</h3>
         <div class="tbl-wrap"><table style="font-size:12px">
-          <thead><tr><th>Lần</th><th>Ngày</th><th>Số tiền</th><th>Số hóa đơn</th><th>Ghi chú</th></tr></thead>
+          <thead><tr><th>Lần</th><th>Ngày</th><th>Số tiền</th><th>Thuế vãng lai</th><th>Số hóa đơn</th><th>Ghi chú</th></tr></thead>
           <tbody>${c.payments.map((p,i)=>`<tr>
             <td><b>Lần ${i+1}</b></td><td>${fmtDate(p.date)}</td>
             <td class="right">${fmtVND(p.amount)}</td>
+            <td class="right">${p.taxVanglai?fmtVND(p.taxVanglai):'—'}</td>
             <td>${escapeHtml(p.invoiceNo||'—')}</td>
             <td class="muted">${escapeHtml(p.note||'')}</td>
           </tr>`).join('')}
-            <tr style="background:#1e3a8a;color:#fff"><td colspan="2"><b>Tổng cộng đã TT</b></td><td class="right"><b>${fmtVND(cc.paid)}</b></td><td colspan="2"></td></tr>
+            <tr style="background:#1e3a8a;color:#fff"><td colspan="2"><b>Tổng cộng đã TT</b></td><td class="right"><b>${fmtVND(cc.paid)}</b></td><td class="right"><b>${fmtVND(c.payments.reduce((s,p)=>s+(Number(p.taxVanglai)||0),0))}</b></td><td colspan="2"></td></tr>
           </tbody>
         </table></div>`:''}
         <h3>📎 Hồ sơ pháp lý đính kèm (link Google Drive)</h3>
@@ -4852,6 +5014,7 @@ window.deleteContract = function(cid){
    SHEET 2 — Form nhập / sửa hợp đồng
    ============================================================ */
 window.openContractForm = function(contractId){
+  if(currentUser()?.role==='employee'){ toast('Bạn chỉ được theo dõi — không được cập nhật dự án','error'); return; }
   const db=getDB();
   const c = contractId ? db.contracts.find(x=>x.id===contractId) : null;
   const isEdit = !!c;
@@ -4933,8 +5096,9 @@ window.openContractForm = function(contractId){
       <div class="help-text">Nhập từng lần thanh toán + số hóa đơn. Tổng "Đã thanh toán" sẽ được tự động tính. Có thể thêm/xóa bao nhiêu lần tùy ý.</div>
       <div id="cf-payment-list"></div>
       <input type="hidden" id="cf-paid" value="${c?.paidValue||0}">
-      <div style="background:#f1f5f9;padding:10px;border-radius:8px;margin-top:8px;font-size:13px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <div style="background:#f1f5f9;padding:10px;border-radius:8px;margin-top:8px;font-size:13px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
         <div><div class="muted">Tổng đã thanh toán</div><b style="color:#1e3a8a" id="cf-paid-total">0 đ</b></div>
+        <div><div class="muted">Tổng thuế vãng lai</div><b style="color:#b45309" id="cf-tax-total">0 đ</b></div>
         <div><div class="muted">Tổng GT HĐ (gốc + phụ lục)</div><b style="color:#1e3a8a" id="cf-total-val">0 đ</b></div>
         <div><div class="muted">Còn phải thu</div><b style="color:#dc2626" id="cf-remaining">0 đ</b></div>
       </div>
@@ -5008,16 +5172,18 @@ function recomputeContractTotals(){
   const addSum = addens.reduce((s,a)=>s+(Number(a.valueChange)||0), 0);
   const totalVal = base + addSum;
   const paid = (window._paymentRows||[]).reduce((s,p)=>s+(Number(p.amount)||0), 0);
+  const taxTotal = (window._paymentRows||[]).reduce((s,p)=>s+(Number(p.taxVanglai)||0), 0);
   const remaining = totalVal - paid;
   const set=(id,v)=>{ const el=document.getElementById(id); if(el) el.textContent=fmtVND(v); };
   set('cf-paid-total', paid);
+  set('cf-tax-total', taxTotal);
   set('cf-total-val', totalVal);
   set('cf-remaining', remaining);
   const paidHid = document.getElementById('cf-paid'); if(paidHid) paidHid.value=paid;
 }
 window.addPaymentRow = function(){
   if(!window._paymentRows) window._paymentRows=[];
-  window._paymentRows.push({amount:0, invoiceNo:'', date:Date.now(), note:''});
+  window._paymentRows.push({amount:0, taxVanglai:0, invoiceNo:'', date:Date.now(), note:''});
   renderPaymentRows();
 };
 window.removePaymentRow = function(i){
@@ -5026,7 +5192,7 @@ window.removePaymentRow = function(i){
 };
 window.updatePaymentRow = function(i, field, value){
   if(!window._paymentRows[i]) return;
-  if(field==='amount') value = Number(value)||0;
+  if(field==='amount'||field==='taxVanglai') value = Number(value)||0;
   if(field==='date') value = value?new Date(value).getTime():Date.now();
   window._paymentRows[i][field] = value;
   recomputeContractTotals();
@@ -5038,11 +5204,12 @@ function renderPaymentRows(){
     host.innerHTML = '<div class="muted" style="padding:8px 0">Chưa có lần thanh toán nào. Bấm "+ Thêm lần TT" để thêm.</div>';
   } else {
     host.innerHTML = `<div class="tbl-wrap"><table style="font-size:12px">
-      <thead><tr><th style="width:40px">Lần</th><th>Ngày TT</th><th>Số tiền (đ)</th><th>Số hóa đơn</th><th>Ghi chú</th><th></th></tr></thead>
+      <thead><tr><th style="width:40px">Lần</th><th>Ngày TT</th><th>Số tiền (đ)</th><th>Thuế vãng lai (đ)</th><th>Số hóa đơn</th><th>Ghi chú</th><th></th></tr></thead>
       <tbody>${rows.map((p,i)=>`<tr>
         <td><b>Lần ${i+1}</b></td>
         <td><input type="date" value="${p.date?new Date(p.date).toISOString().slice(0,10):''}" onchange="updatePaymentRow(${i},'date',this.value)"></td>
         <td><input type="number" value="${p.amount||''}" oninput="updatePaymentRow(${i},'amount',this.value)" placeholder="0"></td>
+        <td><input type="number" value="${p.taxVanglai||''}" oninput="updatePaymentRow(${i},'taxVanglai',this.value)" placeholder="0" title="Thuế vãng lai nộp tại địa phương thi công"></td>
         <td><input value="${escapeHtml(p.invoiceNo||'')}" oninput="updatePaymentRow(${i},'invoiceNo',this.value)" placeholder="VD: HĐ001/2026"></td>
         <td><input value="${escapeHtml(p.note||'')}" oninput="updatePaymentRow(${i},'note',this.value)"></td>
         <td><button class="btn sm danger" type="button" onclick="removePaymentRow(${i})">🗑</button></td>
@@ -5627,8 +5794,9 @@ window.saveContractForm = function(id){
   c.signDate = sd?new Date(sd).getTime():null;
   c.completeDate = dd?new Date(dd).getTime():null;
   c.value=Number(v('cf-val'))||0;
-  c.payments = (window._paymentRows||[]).filter(p=>Number(p.amount)>0 || p.invoiceNo).map(p=>({
+  c.payments = (window._paymentRows||[]).filter(p=>Number(p.amount)>0 || Number(p.taxVanglai)>0 || p.invoiceNo).map(p=>({
     amount: Number(p.amount)||0,
+    taxVanglai: Number(p.taxVanglai)||0,
     invoiceNo: p.invoiceNo||'',
     date: p.date||Date.now(),
     note: p.note||''
@@ -5842,7 +6010,7 @@ window.openImportSlipForm = function(cid, slipId){
         if(!approvers.length) return '';
         return `<div class="card" style="background:#fef3c7;padding:10px;margin-top:10px">
           <label style="font-weight:600;color:#92400e">👨‍💼 Trình phiếu lên Quản lý duyệt</label>
-          <div class="hint">Chọn người Quản lý / Trưởng nhóm để gửi phiếu — họ sẽ thấy phiếu trong "Hồ sơ chờ duyệt" để xác nhận. Để trống nếu admin/manager/pm tự tạo phiếu (tự xác nhận).</div>
+          <div class="hint">Chọn người Quản lý / Trưởng phòng để gửi phiếu — họ sẽ thấy phiếu trong "Hồ sơ chờ duyệt" để xác nhận. Để trống nếu admin/manager/pm tự tạo phiếu (tự xác nhận).</div>
           <select id="sl-submitto" style="margin-top:6px">
             <option value="">— Không gửi cụ thể —</option>
             ${approvers.map(a=>`<option value="${a.id}" ${slip?.submittedToPMId===a.id?'selected':''}>${escapeHtml(a.name)} — ${roleLabel(a.role)}${(c2.projectManagers||[]).includes(a.id)?' (QL DA)':''}</option>`).join('')}
@@ -6463,6 +6631,8 @@ function taskIsBehind(t){
 
 function renderPopupProgress(host, cid){
   const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  const isEmp = currentUser()?.role==='employee';
+  const myId = currentUser()?.id;
   const tasks=db.tasks.filter(t=>t.projectId===cid);
   const cols=[
     {k:'new',        title:'📋 Chưa làm',   css:'#e2e8f0'},
@@ -6527,6 +6697,15 @@ function renderPopupProgress(host, cid){
           since, elapsed, overTime: elapsed > FOUR_HRS,
           actionConfirm:`confirmPcccCompleted('${cid}','doc','${it.id}')`});
       }
+      if(it.pendingDelete){
+        const since = it.pendingDeleteAt || now; const elapsed = now - since;
+        const emp = db.users.find(x=>x.id===it.pendingDeleteBy);
+        pendingDocs.push({type:'doc', title:`🗑 Yêu cầu XÓA: ${it.name||'(chưa đặt tên)'}`,
+          sub:`👤 ${emp?.name||''} đề nghị xóa hồ sơ`,
+          since, elapsed, overTime: elapsed > FOUR_HRS,
+          actionConfirm:`confirmPcccDelete('${cid}','doc','${it.id}')`,
+          actionReject:`rejectPcccDelete('${cid}','doc','${it.id}')`});
+      }
     });
     (c.pcccRecList||[]).forEach(it=>{
       if(it.pendingCompleted && !it.confirmedCompleted){
@@ -6538,6 +6717,15 @@ function renderPopupProgress(host, cid){
           sub:`👤 ${emp?.name||''} đề nghị duyệt${recv?` · 📤 Trình: <b>${escapeHtml(recv.name)}</b>`:''}`,
           since, elapsed, overTime: elapsed > FOUR_HRS,
           actionConfirm:`confirmPcccCompleted('${cid}','rec','${it.id}')`});
+      }
+      if(it.pendingDelete){
+        const since = it.pendingDeleteAt || now; const elapsed = now - since;
+        const emp = db.users.find(x=>x.id===it.pendingDeleteBy);
+        pendingDocs.push({type:'rec', title:`🗑 Yêu cầu XÓA: ${it.name||'(chưa đặt tên)'}`,
+          sub:`👤 ${emp?.name||''} đề nghị xóa biên bản`,
+          since, elapsed, overTime: elapsed > FOUR_HRS,
+          actionConfirm:`confirmPcccDelete('${cid}','rec','${it.id}')`,
+          actionReject:`rejectPcccDelete('${cid}','rec','${it.id}')`});
       }
     });
 
@@ -6643,20 +6831,28 @@ function renderPopupProgress(host, cid){
           <div style="background:#f1f5f9;border-radius:99px;height:8px;overflow:hidden;margin:4px 0"><div style="width:${prog}%;height:8px;background:#1e3a8a"></div></div>
           <div style="font-size:10px;color:#64748b;margin-bottom:4px">${prog.toFixed(0)}% hoàn thành${hasPending?` <span style="color:#b45309;font-weight:600">→ NV đề nghị ${Number(t.pendingProgress).toFixed(0)}%</span>`:''}</div>
           ${hasPending&&canAppr?`<div style="display:flex;gap:4px;margin-bottom:4px"><button class="btn sm success" style="padding:1px 8px" onclick="confirmTaskProgress('${t.id}')">✓ Xác nhận</button><button class="btn sm danger" style="padding:1px 8px" onclick="rejectTaskProgress('${t.id}')">✗ Từ chối</button></div>`:''}
-          <div style="display:flex;gap:4px;flex-wrap:wrap">
+          ${isEmp ? (
+            (t.assigneeId===myId && !hasPending) ? `<div style="display:flex;gap:4px;align-items:center;margin-top:4px">
+                <input type="range" min="0" max="100" value="${prog}" id="kb-prog-${t.id}" oninput="document.getElementById('kb-prog-val-${t.id}').textContent=this.value+'%'" style="flex:1;min-width:60px">
+                <span id="kb-prog-val-${t.id}" style="font-size:10px;font-weight:600;width:34px;text-align:right">${prog.toFixed(0)}%</span>
+                <button class="btn sm success" style="padding:1px 6px" title="Trình tiến độ lên quản lý phê duyệt" onclick="submitProjectTaskProgress('${t.id}')">📤 Trình</button>
+              </div>` : ''
+          ) : `<div style="display:flex;gap:4px;flex-wrap:wrap">
             ${col.k!=='new'?`<button class="btn sm outline" style="padding:1px 6px" onclick="moveProjectTask('${t.id}','${col.k==='done'?'inprogress':'new'}')">←</button>`:''}
             ${col.k!=='done'?`<button class="btn sm outline" style="padding:1px 6px" onclick="moveProjectTask('${t.id}','${col.k==='new'?'inprogress':'done'}')">→</button>`:''}
             <button class="btn sm outline" style="padding:1px 6px" onclick="openProjectTaskForm('${cid}','${t.id}')">✏</button>
             <button class="btn sm danger" style="padding:1px 6px" onclick="delProjectTask('${cid}','${t.id}')">🗑</button>
-          </div></div>`;
+          </div>`}</div>`;
       }).join('')||'<div class="muted" style="font-size:11px">—</div>'}
     </div>`;
   }).join('')}</div>`;
   host.innerHTML=`
-    <div class="help-text">💡 Lập kế hoạch thi công cho từng hạng mục (Lắp đặt đường ống, kéo cáp tín hiệu, lắp đặt tủ trung tâm…). Mỗi công việc giao cho 1 nhân viên sẽ <b>tự hiển thị trong "Theo dõi công việc"</b> của nhân viên đó — nhân viên tự cập nhật % tiến độ.</div>
+    <div class="help-text">💡 ${isEmp
+      ? 'Bạn theo dõi toàn bộ Gantt &amp; bảng Kanban của dự án. Với công việc <b>được giao cho bạn</b>, hãy kéo thanh tiến độ rồi bấm <b>📤 Trình</b> để gửi % tiến độ lên quản lý phê duyệt.'
+      : 'Lập kế hoạch thi công cho từng hạng mục (Lắp đặt đường ống, kéo cáp tín hiệu, lắp đặt tủ trung tâm…). Mỗi công việc giao cho 1 nhân viên sẽ <b>tự hiển thị trong "Theo dõi công việc"</b> của nhân viên đó — nhân viên tự cập nhật % tiến độ.'}</div>
     ${pendingApprovalHtml}
     ${alertHtml}
-    <div style="margin-bottom:10px"><button class="btn success" onclick="openProjectTaskForm('${cid}')">+ Giao việc thi công</button></div>
+    ${isEmp?'':`<div style="margin-bottom:10px"><button class="btn success" onclick="openProjectTaskForm('${cid}')">+ Giao việc thi công</button></div>`}
     <h3>📊 Tiến độ tổng thể (Gantt)</h3>
     <div class="card">${ganttHtml}</div>
     <h3>🗂 Bảng công việc (Kanban)</h3>
@@ -6664,8 +6860,22 @@ function renderPopupProgress(host, cid){
   `;
 }
 window.moveProjectTask=function(id,st){ const db=getDB(); const t=db.tasks.find(x=>x.id===id); if(t){ t.status=st; saveDB(db); renderPopupBody(); } };
+/* NV trình % tiến độ công việc của mình lên quản lý phê duyệt (ghi pendingProgress) */
+window.submitProjectTaskProgress=function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  const me=currentUser();
+  if(t.assigneeId!==me?.id){ toast('Bạn chỉ trình được tiến độ công việc được giao cho mình','error'); return; }
+  const inp=document.getElementById('kb-prog-'+taskId); if(!inp) return;
+  const val=Math.max(0, Math.min(100, Number(inp.value)||0));
+  t.pendingProgress=val;
+  t.pendingAt=Date.now();
+  t.pendingBy=me?.id;
+  saveDB(db); renderPopupBody();
+  toast(`Đã trình tiến độ ${val}% — chờ quản lý phê duyệt`,'info');
+};
 window.delProjectTask=function(cid,id){ if(!confirm('Xóa công việc này?'))return; const db=getDB(); db.tasks=db.tasks.filter(t=>t.id!==id); saveDB(db); renderPopupBody(); toast('Đã xóa công việc'); };
 window.openProjectTaskForm=function(cid,taskId){
+  if(currentUser()?.role==='employee'){ toast('Nhân viên không có quyền giao việc','error'); return; }
   const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c)return;
   const t=taskId?db.tasks.find(x=>x.id===taskId):null;
   const emps=getProjectEmployees(c);
@@ -6753,14 +6963,16 @@ function renderPopupPCCC(host, cid){
   _ensurePcccLists(c); saveDB(db);
   const emps=getProjectEmployees(c);
   const me=currentUser();
+  const isEmp = me?.role==='employee';
   const canAppr=canApprove();
   const empOpts=(sel)=>`<option value="">— Chọn NV —</option>`+emps.map(e=>`<option value="${e.id}" ${sel===e.id?'selected':''}>${escapeHtml(e.name)}</option>`).join('');
 
   const renderRows = (list, scope)=> list.map(it=>{
-    const locked = !!it.confirmedCompleted; // NV không sửa được khi đã được trưởng nhóm xác nhận
+    const locked = !!it.confirmedCompleted; // NV không sửa được khi đã được trưởng phòng xác nhận
     const disabledAttr = (!canAppr && locked) ? 'disabled style="background:#f1f5f9"' : '';
     const pendingDone = it.pendingCompleted && !it.confirmedCompleted;
-    return `<tr ${locked?'style="background:#dcfce7"':(pendingDone?'style="background:#fef3c7"':'')}>
+    const pendingDel = !!it.pendingDelete;
+    return `<tr ${pendingDel?'style="background:#fee2e2"':(locked?'style="background:#dcfce7"':(pendingDone?'style="background:#fef3c7"':''))}>
       <td><input value="${escapeHtml(it.name||'')}" oninput="updatePcccItem('${cid}','${scope}','${it.id}','name',this.value)" placeholder="${scope==='doc'?'VD: Bản vẽ thiết kế':'VD: Biên bản thử áp lực ống'}" style="min-width:220px;font-weight:600" ${disabledAttr}></td>
       <td><input type="url" value="${escapeHtml(it.link||'')}" placeholder="https://drive.google.com/..." oninput="updatePcccItem('${cid}','${scope}','${it.id}','link',this.value)" style="min-width:200px" ${disabledAttr}>
         ${it.link?`<a href="${escapeHtml(it.link)}" target="_blank" style="font-size:11px">↗ mở</a>`:''}</td>
@@ -6777,14 +6989,17 @@ function renderPopupPCCC(host, cid){
         ${canAppr && locked ? `<br><button class="btn sm warn" style="padding:1px 6px;margin-top:4px;font-size:10px" onclick="unconfirmPcccCompleted('${cid}','${scope}','${it.id}')">↩ Hủy XN</button>` : ''}
       </td>
       <td>
-        <button class="btn sm outline" onclick="assignPcccTaskDyn('${cid}','${scope}','${it.id}')" title="Tạo nhiệm vụ theo dõi cho NV phụ trách" ${locked&&!canAppr?'disabled':''}>📌 Giao NV</button>
-        <button class="btn sm danger" onclick="removePcccItem('${cid}','${scope}','${it.id}')" title="Xóa" ${locked&&!canAppr?'disabled':''}>🗑</button>
+        ${pendingDel ? `<span class="badge" style="background:#fee2e2;color:#991b1b">🗑 Chờ duyệt xóa</span>
+          ${canAppr ? `<br><button class="btn sm danger" style="padding:1px 6px;margin-top:4px" onclick="confirmPcccDelete('${cid}','${scope}','${it.id}')">✓ Duyệt xóa</button>
+          <button class="btn sm outline" style="padding:1px 6px;margin-top:4px" onclick="rejectPcccDelete('${cid}','${scope}','${it.id}')">✗ Hủy</button>` : ''}`
+        : `${isEmp?'':`<button class="btn sm outline" onclick="assignPcccTaskDyn('${cid}','${scope}','${it.id}')" title="Tạo nhiệm vụ theo dõi cho NV phụ trách" ${locked&&!canAppr?'disabled':''}>📌 Giao NV</button>`}
+        <button class="btn sm danger" onclick="removePcccItem('${cid}','${scope}','${it.id}')" title="${isEmp?'Gửi yêu cầu xóa (chờ phê duyệt)':'Xóa'}" ${locked&&!canAppr?'disabled':''}>🗑${isEmp?' Y/c xóa':''}</button>`}
       </td>
     </tr>`;
   }).join('') || `<tr><td colspan="6" class="muted center">Chưa có ${scope==='doc'?'loại hồ sơ':'biên bản'} nào. Bấm "+ Thêm" để thêm.</td></tr>`;
 
   host.innerHTML=`
-    <div class="help-text">💡 Quản lý vòng đời hồ sơ PCCC: bản vẽ thiết kế → thẩm duyệt (Cảnh sát PCCC) → nghiệm thu đưa vào sử dụng. Dán <b>link kho lưu trữ</b> (Google Drive) cho mỗi hồ sơ. <b>Nhân viên</b> có thể tạo / sửa / xóa biên bản và tích "đã hoàn thiện HS" để gửi xác nhận. <b>Trưởng nhóm / Admin</b> mới có quyền xác nhận chính thức — khi đã xác nhận, nhân viên KHÔNG sửa được nữa.</div>
+    <div class="help-text">💡 Quản lý vòng đời hồ sơ PCCC: bản vẽ thiết kế → thẩm duyệt (Cảnh sát PCCC) → nghiệm thu đưa vào sử dụng. Dán <b>link kho lưu trữ</b> (Google Drive) cho mỗi hồ sơ. <b>Nhân viên</b> được cập nhật link, thêm hồ sơ và tích "đã hoàn thiện HS" để trình phê duyệt; khi muốn <b>xóa phải gửi yêu cầu</b> — hồ sơ chỉ bị xóa sau khi <b>Trưởng phòng / Quản lý</b> phê duyệt. <b>Trưởng phòng / Quản lý / Admin</b> mới có quyền xác nhận hoàn thiện — khi đã xác nhận, nhân viên KHÔNG sửa được nữa.</div>
     <h3>📐 Vòng đời hồ sơ kỹ thuật & pháp lý <button class="btn sm success" style="float:right" onclick="addPcccItem('${cid}','doc')">+ Thêm loại hồ sơ</button></h3>
     <div class="tbl-wrap"><table style="font-size:13px">
       <thead><tr><th>Tên loại hồ sơ</th><th>Link kho lưu trữ</th><th>Trạng thái</th><th>Người phụ trách</th><th>Hoàn thiện HS</th><th></th></tr></thead>
@@ -6903,10 +7118,42 @@ window.removePcccItem = function(cid, scope, itemId){
   if(it && it.confirmedCompleted && !canApprove()){
     toast('Biên bản đã được xác nhận hoàn thiện — không được xóa','error'); return;
   }
+  // NV không có quyền duyệt → gửi YÊU CẦU xóa, chờ Trưởng phòng/Quản lý phê duyệt
+  if(!canApprove()){
+    if(it && it.pendingDelete){ toast('Hồ sơ này đã được gửi yêu cầu xóa, đang chờ phê duyệt','warn'); return; }
+    if(!confirm('Gửi YÊU CẦU XÓA hồ sơ này lên Trưởng phòng / Quản lý phê duyệt?\n(Hồ sơ chỉ bị xóa sau khi được phê duyệt.)')) return;
+    if(it){
+      it.pendingDelete = true;
+      it.pendingDeleteBy = currentUser()?.id;
+      it.pendingDeleteAt = Date.now();
+    }
+    saveDB(db); renderPopupBody();
+    toast('Đã gửi yêu cầu xóa — chờ Trưởng phòng/Quản lý phê duyệt','info');
+    return;
+  }
   if(!confirm('Xóa mục này?')) return;
   if(scope==='doc') c.pcccDocList = (c.pcccDocList||[]).filter(x=>x.id!==itemId);
   else c.pcccRecList = (c.pcccRecList||[]).filter(x=>x.id!==itemId);
   saveDB(db); renderPopupBody(); toast('Đã xóa');
+};
+/* Cấp có quyền (Trưởng phòng/Quản lý/Admin) duyệt yêu cầu xóa hồ sơ của NV */
+window.confirmPcccDelete = function(cid, scope, itemId){
+  if(!canApprove()){ toast('Chỉ Trưởng phòng/Quản lý/Admin có quyền duyệt xóa','error'); return; }
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  if(!confirm('Phê duyệt yêu cầu XÓA — hồ sơ sẽ bị xóa vĩnh viễn. Tiếp tục?')) return;
+  if(scope==='doc') c.pcccDocList = (c.pcccDocList||[]).filter(x=>x.id!==itemId);
+  else c.pcccRecList = (c.pcccRecList||[]).filter(x=>x.id!==itemId);
+  saveDB(db); renderPopupBody(); toast('Đã duyệt và xóa hồ sơ','success');
+};
+window.rejectPcccDelete = function(cid, scope, itemId){
+  if(!canApprove()){ toast('Chỉ Trưởng phòng/Quản lý/Admin có quyền','error'); return; }
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  const list = scope==='doc' ? c.pcccDocList : c.pcccRecList;
+  const it = (list||[]).find(x=>x.id===itemId); if(!it) return;
+  it.pendingDelete = false;
+  it.pendingDeleteBy = null;
+  it.pendingDeleteAt = null;
+  saveDB(db); renderPopupBody(); toast('Đã hủy yêu cầu xóa','warn');
 };
 window.updatePcccItem = function(cid, scope, itemId, field, value){
   const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
@@ -6936,121 +7183,62 @@ window.assignPcccTaskDyn = function(cid, scope, itemId){
 
 /* ============================================================
    APP INIT — v4 Firebase
+   ✓ Đa nhiệm: nhiều mảng cùng lúc, lương = base + allowance + Σ KPI bonus
+   ✓ Lưu CSDL trên Firebase Realtime DB — đồng bộ thời gian thực mọi thiết bị
    ============================================================ */
 (async function init(){
-  // Hiển thị màn hình loading, chờ Firebase load xong
+  const urlParams = new URLSearchParams(location.search);
+  const popupContractId = urlParams.get('openContract');
+
+  // Hiện màn hình loading — tránh hiển thị dữ liệu cũ từ cache rồi "nhảy" khi Firebase trả về
   document.getElementById('root').innerHTML = `
-    <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1e3a8a,#0f172a);flex-direction:column;gap:16px">
-      <div style="width:48px;height:48px;border:4px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:spin 0.8s linear infinite"></div>
-      <div style="color:#fff;font-size:16px;font-weight:600">Đang kết nối Firebase...</div>
-      <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
+                background:linear-gradient(135deg,#1e3a8a 0%,#0f172a 100%);gap:18px">
+      <div style="color:#fff;font-size:22px;font-weight:700;letter-spacing:.3px">EMC · AA · TẢN VIÊN</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;animation:fb-dot 1.2s ease-in-out infinite"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;animation:fb-dot 1.2s ease-in-out infinite .2s"></div>
+        <div style="width:10px;height:10px;border-radius:50%;background:#3b82f6;animation:fb-dot 1.2s ease-in-out infinite .4s"></div>
+      </div>
+      <div style="color:#94a3b8;font-size:13px" id="fb-loading-msg">Đang kết nối Firebase…</div>
+      <style>@keyframes fb-dot{0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}</style>
     </div>`;
-  // Firebase module sẽ gọi window._onFirebaseReady() sau khi load xong
+
+  // Pull Firebase — đây là nguồn dữ liệu chính, bắt buộc phải chờ
+  try{
+    const fbData = await Promise.race([
+      _waitFirebase().then(() => fbPullOnce()),
+      // Timeout 8 giây: nếu mạng quá chậm/lỗi → fallback về localStorage cache
+      new Promise((_,rej) => setTimeout(()=>rej(new Error('timeout')), 8000))
+    ]);
+    if(fbData) _fbConnected = true;
+  }catch(e){
+    // Hết timeout hoặc lỗi mạng → dùng cache localStorage, vẫn tiếp tục
+    const msgEl = document.getElementById('fb-loading-msg');
+    if(msgEl) msgEl.textContent = 'Không kết nối được Firebase — dùng dữ liệu cục bộ…';
+    await new Promise(r => setTimeout(r, 1200)); // Cho người dùng đọc thông báo
+  }
+
+  // Bật realtime listener để nhận thay đổi từ các máy khác
+  fbStartRealtime();
+
+  if(popupContractId){
+    // Cửa sổ popup: Firebase đã pull xong ở trên → dữ liệu đã có trong localStorage
+    // Nếu vẫn không tìm thấy → thử pull thêm 1 lần nữa (phòng trường hợp timeout lần đầu)
+    const db = getDB();
+    const found = db.contracts && db.contracts.find(x=>x.id===popupContractId);
+    if(!found && window._firebaseReady){
+      try{
+        const retry = await fbPullOnce();
+        if(retry) _fbConnected = true;
+      }catch(e){}
+    }
+    renderContractPopupWindow(popupContractId);
+  } else {
+    render();
+    setTimeout(checkDeadlineWarning, 800);
+  }
 })();
-</script>
-
-<!-- ===== FIREBASE MODULE — Realtime Database ===== -->
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
-import { getDatabase, ref, set, onValue }
-  from "https://www.gstatic.com/firebasejs/12.13.0/firebase-database.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyA9m4Mu9b3EGnZsQYqrBxCDclS9avzhE_0",
-  authDomain: "qlnv-app.firebaseapp.com",
-  projectId: "qlnv-app",
-  storageBucket: "qlnv-app.firebasestorage.app",
-  messagingSenderId: "55491624607",
-  appId: "1:55491624607:web:8520bcac2ebc32cb75ecaa",
-  databaseURL: "https://qlnv-app-default-rtdb.asia-southeast1.firebasedatabase.app"
-};
-
-const _app  = initializeApp(firebaseConfig);
-const _rtdb = getDatabase(_app);
-const _REF  = ref(_rtdb, 'hrm/emc_data');
-
-// ---- Hàm ghi lên Realtime Database ----
-window._fbSaveToRTDB = async function(dbObj){
-  try{
-    await set(_REF, { payload: JSON.stringify(dbObj), updatedAt: Date.now() });
-  }catch(e){ console.error('🔥 RTDB write error:', e); }
-};
-
-// ---- Import dữ liệu JSON có sẵn lên Firebase ----
-window.importDataToFirebase = async function(jsonData){
-  if(!confirm('Import dữ liệu lên Firebase? Sẽ ghi đè dữ liệu cloud hiện tại.')) return;
-  try{
-    const payload = typeof jsonData === 'string' ? jsonData : JSON.stringify(jsonData);
-    await set(_REF, { payload, updatedAt: Date.now() });
-    alert('✅ Import thành công!');
-  }catch(e){ alert('Lỗi: '+e.message); }
-};
-
-// ---- Lắng nghe Realtime Database ----
-let _booted = false;
-onValue(_REF, (snap) => {
-  let dbData = null;
-
-  if(snap.exists() && snap.val()?.payload){
-    try{ dbData = JSON.parse(snap.val().payload); }catch(e){}
-  }
-
-  if(!_booted){
-    _booted = true;
-    // Lần đầu: load data vào cache rồi khởi động app
-    if(dbData && dbData.users){
-      window._dbCache = dbData;
-    } else {
-      // RTDB trống → dùng initDB (tạo mới)
-      window._dbCache = null;
-    }
-
-    // Khởi động app
-    const urlParams = new URLSearchParams(location.search);
-    const popupContractId = urlParams.get('openContract');
-    if(typeof window.getDB === 'function') window.getDB(); // warm cache
-    if(popupContractId){
-      if(typeof window.renderContractPopupWindow === 'function')
-        window.renderContractPopupWindow(popupContractId);
-    } else {
-      if(typeof window.render === 'function') window.render();
-      setTimeout(()=>{ if(typeof window.checkDeadlineWarning === 'function') window.checkDeadlineWarning(); }, 800);
-    }
-    return;
-  }
-
-  // Cập nhật realtime từ người dùng khác
-  if(dbData && dbData.users){
-    window._dbCache = dbData;
-    // Nếu đang ở tab popup chi tiết dự án → re-render đúng popup, không reset về trang chủ
-    const _popupId = new URLSearchParams(location.search).get('openContract');
-    if(_popupId){
-      if(typeof window.renderContractPopupWindow === 'function')
-        window.renderContractPopupWindow(_popupId);
-    } else {
-      if(typeof window.render === 'function') window.render();
-    }
-    // Hiện toast thông báo
-    const t = document.createElement('div');
-    t.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#3b82f6;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
-    t.textContent = '🔄 Dữ liệu vừa đồng bộ từ người dùng khác';
-    document.body.appendChild(t);
-    setTimeout(()=>t.remove(), 3000);
-  }
-}, (err)=>{
-  console.error('🔥 RTDB listener error:', err);
-  if(!_booted){
-    _booted = true;
-    document.getElementById('root').innerHTML = `
-      <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;flex-direction:column;gap:12px">
-        <div style="color:#f87171;font-size:18px;font-weight:700">❌ Không kết nối được Firebase</div>
-        <div style="color:#94a3b8;font-size:14px">${err.message}</div>
-        <button onclick="location.reload()" style="margin-top:10px;padding:10px 20px;background:#3b82f6;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:14px">Thử lại</button>
-      </div>`;
-  }
-});
-
-console.log('🔥 Firebase Realtime Database — Nguồn dữ liệu duy nhất đã sẵn sàng');
 </script>
 </body>
 </html>
