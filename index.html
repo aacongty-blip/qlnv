@@ -320,8 +320,10 @@ function getDB(){
 }
 
 /* Ghi DB: cập nhật RAM + đẩy Firebase ngay */
+let _lastSaveTs = 0; // timestamp lần ghi cuối — listener dùng để bỏ qua echo của chính mình
 function saveDB(db){
   _db = db;
+  _lastSaveTs = Date.now();
   if(window._firebaseReady && _fbConnected){
     window._fbSet(FB_PATH, db).catch(e=>console.error('Firebase write err', e));
   }
@@ -391,14 +393,14 @@ async function fbPullOnce(){
   }
 }
 
-/* Realtime listener — nhận thay đổi từ máy khác */
+/* Realtime listener — nhận thay đổi từ máy KHÁC, bỏ qua echo của chính mình */
 function fbStartRealtime(){
   if(_fbSyncHandle || !window._firebaseReady) return;
-  // Đánh dấu thời điểm bật listener — bỏ qua callback đầu tiên (là dữ liệu cũ Firebase fire ngay lập tức)
-  let _firstFire = true;
   _fbSyncHandle = window._fbOn(FB_PATH, (data)=>{
-    if(_firstFire){ _firstFire = false; return; } // bỏ qua fire đầu tiên
     if(!data || !data.users) return;
+    // Bỏ qua trong vòng 2 giây sau khi chính mình vừa ghi
+    // — Firebase echo lại dữ liệu cũ trước khi nhận bản mới
+    if(Date.now() - _lastSaveTs < 2000) return;
     _db = migrateDB(data);
     _fbConnected = true;
     if(typeof _popupCid !== 'undefined' && _popupCid){
@@ -696,7 +698,7 @@ function render(){
       </div>
     </aside>
     <div style="display:flex;flex-direction:column;min-height:100vh">
-      <div id="file-status-bar"></div>
+      <div id="file-status-bar" style="display:none"></div>
       <main class="main" id="main-view"></main>
     </div>
   `;
@@ -706,24 +708,7 @@ function render(){
   root.appendChild(app);
   routeTo(currentView);
 }
-function renderFileStatusBar(){
-  const host=document.getElementById('file-status-bar');
-  if(!host) return;
-  if(_fbConnected){
-    host.innerHTML = `<div style="padding:8px 16px;background:#16a34a;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>☁️ Dữ liệu đang đồng bộ <b>Firebase Realtime Database</b> · Tất cả thiết bị đều nhận dữ liệu mới nhất.</span>
-      <span>
-        <button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="syncFirebaseNow()">⟳ Ghi ngay</button>
-        <button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="pullFirebaseNow()">⬇ Kéo xuống</button>
-      </span>
-    </div>`;
-  } else {
-    host.innerHTML = `<div style="padding:8px 16px;background:#f59e0b;color:#fff;font-size:12px;display:flex;justify-content:space-between;align-items:center">
-      <span>⏳ Đang kết nối Firebase… (Dữ liệu tạm lưu cục bộ)</span>
-      <span><button class="btn sm outline" style="background:#fff;padding:3px 10px" onclick="syncFirebaseNow()">⟳ Thử kết nối lại</button></span>
-    </div>`;
-  }
-}
+function renderFileStatusBar(){ /* đã xóa — Firebase tự đồng bộ, không cần hiển thị */ }
 function renderNav(u){
   const items=[];
   // "Theo dõi công việc" được đưa lên ĐẦU tab bên trái cho admin/manager/employee
