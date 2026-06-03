@@ -5,6 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>EMC · AA · TẢN VIÊN | Quản lý nhân sự</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxZTNhOGEiLz48cmVjdCB4PSIxNCIgeT0iMTAiIHdpZHRoPSIzNiIgaGVpZ2h0PSI0NCIgcng9IjQiIGZpbGw9IiNmZmYiLz48cmVjdCB4PSIyNCIgeT0iNiIgd2lkdGg9IjE2IiBoZWlnaHQ9IjkiIHJ4PSIyIiBmaWxsPSIjM2I4MmY2Ii8+PHJlY3QgeD0iMjAiIHk9IjIyIiB3aWR0aD0iMjQiIGhlaWdodD0iMyIgcng9IjEuNSIgZmlsbD0iIzFlM2E4YSIvPjxyZWN0IHg9IjIwIiB5PSIzMCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjMiIHJ4PSIxLjUiIGZpbGw9IiM2NDc0OGIiLz48cmVjdCB4PSIyMCIgeT0iMzgiIHdpZHRoPSIxNiIgaGVpZ2h0PSIzIiByeD0iMS41IiBmaWxsPSIjNjQ3NDhiIi8+PGNpcmNsZSBjeD0iNDYiIGN5PSI0NiIgcj0iMTEiIGZpbGw9IiMxNmEzNGEiLz48cGF0aCBkPSJNNDEgNDYgbDMuNSAzLjUgTDUyIDQyIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMyIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <!-- Firebase SDK (compat — chạy đồng bộ với script thường, không bị vấn đề timing của type=module) -->
@@ -77,7 +78,7 @@
           locale: (flatpickr.l10ns && flatpickr.l10ns.vn) || 'vn',
           dateFormat: 'Y-m-d',
           altInput: true,
-          altFormat: 'd/m/Y',
+          altFormat: 'l, d/m/Y',
           allowInput: true,
           disableMobile: true
         });
@@ -967,7 +968,12 @@ function renderLogin(){
     }
   }
   pick.querySelectorAll('button').forEach(b=>b.addEventListener('click',(ev)=>{ev.preventDefault();setRole(b.dataset.role);}));
-  setRole('admin');
+  // [PATCH REQ7] Khoi phuc dang nhap gan nhat
+  let _lastLogin=null; try{ _lastLogin=JSON.parse(localStorage.getItem('HRM_LAST_LOGIN')||'null'); }catch(e){}
+  setRole(_lastLogin && _lastLogin.role ? _lastLogin.role : 'admin');
+  if(_lastLogin && _lastLogin.role!=='admin' && _lastLogin.username){
+    const _ui=document.getElementById('login-user'); if(_ui) _ui.value=_lastLogin.username;
+  }
 
   async function doLogin(){
     const errBox=document.getElementById('login-err');
@@ -978,6 +984,7 @@ function renderLogin(){
     if(role!=='admin' && !u){ errBox.textContent='Vui lòng nhập tên đăng nhập'; return; }
     try{
       await loginAttempt(role, u, p);
+      try{ localStorage.setItem('HRM_LAST_LOGIN', JSON.stringify({role, username:u})); }catch(e){}
       toast('Đăng nhập thành công');
       // [PATCH] Mặc định mở tab Theo dõi công việc sau khi đăng nhập
       currentView = (role==='employee') ? 'my-tasks' : 'tasks';
@@ -1166,6 +1173,7 @@ function viewDashboard(main, u){
   const pendingApprovalHtml = (u.role!=='employee') ? renderAttendancePendingList(u, db) : '';
 
   main.innerHTML=`
+    ${renderHomeAlerts(u, db)}
     <div class="page-head">
       <h1>🕐 Chấm công · ${fmtPeriod(period)}</h1>
       <div class="actions">
@@ -2144,6 +2152,16 @@ function collectAllPendingApprovals(u){
         actionConfirm:`confirmTaskProgress('${t.id}');render()`,
         actionReject:`rejectTaskProgress('${t.id}');render()`});
     });
+    // [PATCH REQ4] Đề xuất HOÀN THÀNH công việc trong dự án — chờ duyệt
+    (db.tasks||[]).filter(t=>t.projectId===c.id && t.pendingComplete).forEach(t=>{
+      const emp=db.users.find(x=>x.id===t.assigneeId);
+      const since=t.pendingCompleteAt||now;
+      items.push({type:'done', proj:projName, projId:c.id,
+        title:`✅ Đề xuất HOÀN THÀNH: ${escapeHtml(t.title)}`,
+        sub:`👤 ${escapeHtml(emp?.name||'')}`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+        actionConfirm:`confirmTaskComplete('${t.id}');render()`,
+        actionReject:`rejectTaskComplete('${t.id}');render()`});
+    });
     // 2) Phiếu nhập chờ xác nhận
     (db.importSlips||[]).filter(s=>s.contractId===c.id && !s.confirmed).forEach(s=>{
       const since=s.submittedAt||s.createdAt||now;
@@ -2176,6 +2194,32 @@ function collectAllPendingApprovals(u){
       });
     });
   });
+  // [PATCH REQ4] Công việc CHUNG (ngoài dự án) — admin / pm / manager duyệt
+  (function(){
+    const u2 = currentUser(); if(!u2) return;
+    if(!(u2.role==='admin' || u2.role==='pm' || u2.role==='manager')) return;
+    let gtasks = (db.tasks||[]).filter(t=>!t.projectId);
+    if(u2.role==='manager'){ const ids=db.users.filter(x=>x.companyId===u2.companyId).map(x=>x.id); gtasks=gtasks.filter(t=>ids.includes(t.assigneeId)); }
+    gtasks.forEach(t=>{
+      const emp=db.users.find(x=>x.id===t.assigneeId);
+      if(t.pendingProgress!=null){
+        const since=t.pendingAt||now;
+        items.push({type:'progress', proj:'Việc chung', projId:'',
+          title:`${escapeHtml(t.title)}: ${(t.progress||0).toFixed(0)}% → ${Number(t.pendingProgress).toFixed(0)}%`,
+          sub:`👤 ${escapeHtml(emp?.name||'')}`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+          actionConfirm:`confirmTaskProgress('${t.id}');render()`,
+          actionReject:`rejectTaskProgress('${t.id}');render()`});
+      }
+      if(t.pendingComplete){
+        const since=t.pendingCompleteAt||now;
+        items.push({type:'done', proj:'Việc chung', projId:'',
+          title:`✅ Đề xuất HOÀN THÀNH: ${escapeHtml(t.title)}`,
+          sub:`👤 ${escapeHtml(emp?.name||'')}`, since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+          actionConfirm:`confirmTaskComplete('${t.id}');render()`,
+          actionReject:`rejectTaskComplete('${t.id}');render()`});
+      }
+    });
+  })();
   return items;
 }
 function renderAllPendingApprovals(u){
@@ -2188,6 +2232,7 @@ function renderAllPendingApprovals(u){
   const overCount = all.filter(x=>x.overTime).length;
   const typeBadge = (t)=>({
     progress:'<span class="badge" style="background:#dbeafe;color:#1e40af">Tiến độ</span>',
+    done:'<span class="badge" style="background:#dcfce7;color:#166534">Hoàn thành</span>',
     slip:'<span class="badge" style="background:#fed7aa;color:#9a3412">Phiếu nhập</span>',
     doc:'<span class="badge" style="background:#e0e7ff;color:#3730a3">Hồ sơ KT</span>',
     rec:'<span class="badge" style="background:#fce7f3;color:#9d174d">Biên bản</span>',
@@ -2291,6 +2336,7 @@ function renderTasksTable(){
     const stat = deadlineStatus(t);
     let dueStyle='', dueExtra='';
     if(stat==='overdue'){ dueStyle='color:#dc2626;font-weight:700;'; dueExtra='<span class="badge kpi-kem" style="margin-left:6px;font-size:10px">QUÁ HẠN</span>'; }
+    else if(stat==='due'){ dueStyle='color:#dc2626;font-weight:700;'; dueExtra='<span class="badge kpi-kem" style="margin-left:6px;font-size:10px">HẾT HẠN (còn 0 ngày)</span>'; }
     else if(stat==='soon'){ dueStyle='color:#b45309;font-weight:600;'; dueExtra='<span class="badge kpi-dat" style="margin-left:6px;font-size:10px">SẮP HẾT HẠN</span>'; }
     const isDone = t.status==='done';
     const rowStyle = isDone? 'text-decoration:line-through;color:#94a3b8;':'';
@@ -2307,6 +2353,7 @@ function renderTasksTable(){
       <td class="muted">${escapeHtml(t.note||'')}</td>
       <td>
         <button class="btn sm outline" onclick="openTaskForm('${t.id}')">Sửa</button>
+        <button class="btn sm outline" onclick="openMoveTask('${t.id}')" title="Chuyển công việc vào/ra dự án">↔ Chuyển</button>
         <button class="btn sm danger" onclick="delTask('${t.id}')">Xóa</button>
       </td>
     </tr>`;
@@ -2360,33 +2407,209 @@ async function toggleTaskDone(id, checked){
   const db=getDB();
   const t=db.tasks.find(x=>x.id===id);
   if(!t) return;
+  const me=currentUser();
+  const isEmp = me && me.role==='employee';
   if(checked){
-    t.status='done';
-    t.progress=100;
-    t.confirmedAt=Date.now();
-    t.confirmedBy=currentUser().id;
+    if(isEmp){
+      // [PATCH REQ4] NV chỉ ĐỀ XUẤT hoàn thành — chờ quản lý/trưởng nhóm/QLDA phê duyệt
+      t.pendingComplete=true;
+      t.pendingCompleteAt=Date.now();
+      t.pendingCompleteBy=me.id;
+      await saveDB(db);
+      toast('Đã gửi ĐỀ XUẤT HOÀN THÀNH — chờ cấp quản lý phê duyệt','info');
+    }else{
+      t.status='done';
+      t.progress=100;
+      t.confirmedAt=Date.now();
+      t.confirmedBy=me.id;
+      t.pendingComplete=false;
+      await saveDB(db);
+      toast('Đã đánh dấu hoàn thành');
+    }
   }else{
-    t.status='inprogress';
-    // Giữ progress < 100 nếu chuyển ngược về
-    if(t.progress>=100) t.progress=80;
+    if(isEmp && t.pendingComplete){
+      t.pendingComplete=false; t.pendingCompleteBy=null;
+      await saveDB(db);
+      toast('Đã hủy đề xuất hoàn thành','warn');
+    }else{
+      t.status='inprogress';
+      if(t.progress>=100) t.progress=80;
+      t.pendingComplete=false;
+      await saveDB(db);
+      toast('Đã chuyển về Đang thực hiện');
+    }
   }
-  await saveDB(db);
-  toast(checked?'Đã đánh dấu hoàn thành':'Đã chuyển về Đang thực hiện');
   if(document.getElementById('tasks-table-wrap')) renderTasksTable();
   if(document.getElementById('my-tasks-table-wrap')) renderMyTasksTable();
 }
 window.toggleTaskDone=toggleTaskDone;
 
-/* ---------- Trạng thái deadline: 'done' | 'overdue' | 'soon' | 'ok' ---------- */
+/* ---------- Trạng thái deadline: 'done' | 'overdue' | 'due' | 'soon' | 'ok' ----------
+   [PATCH] Tính theo NGÀY LỊCH: còn 0 ngày = 'due' (HẾT HẠN hôm nay);
+   quá hạn từ 1 ngày trở lên = 'overdue' (QUÁ HẠN). */
 function deadlineStatus(t){
   if(!t.dueDate) return 'ok';
   if(t.status==='done') return 'done';
-  const now = Date.now();
-  if(t.dueDate < now) return 'overdue';
-  const days = Math.ceil((t.dueDate - now) / 86400000);
+  const d0 = new Date(); d0.setHours(0,0,0,0);
+  const dd = new Date(t.dueDate); dd.setHours(0,0,0,0);
+  const days = Math.round((dd - d0) / 86400000);
+  if(days < 0) return 'overdue';
+  if(days === 0) return 'due';
   if(days <= 3) return 'soon';
   return 'ok';
 }
+
+/* ============================================================
+   [PATCH BỔ SUNG] Hàm tiện ích cho bản cập nhật
+   ============================================================ */
+function renderHomeAlerts(u, db){
+  db = db || getDB();
+  let myTasks = [];
+  if(u.role==='employee') myTasks = db.tasks.filter(t=>t.assigneeId===u.id);
+  else if(u.role==='manager'){ const ids=db.users.filter(x=>x.companyId===u.companyId).map(x=>x.id); myTasks=db.tasks.filter(t=>ids.includes(t.assigneeId)); }
+  else myTasks = db.tasks.slice();
+  const overdue = myTasks.filter(t=>deadlineStatus(t)==='overdue');
+  const due     = myTasks.filter(t=>deadlineStatus(t)==='due');
+  const soon    = myTasks.filter(t=>deadlineStatus(t)==='soon');
+  let projs = db.contracts.slice(); if(u.role==='manager') projs = projs.filter(c=>c.companyId===u.companyId);
+  const pOver = projs.filter(c=>typeof contractDeadlineStatus==='function' && contractDeadlineStatus(c)==='overdue');
+  const pSoon = projs.filter(c=>typeof contractDeadlineStatus==='function' && contractDeadlineStatus(c)==='soon');
+  let pendCnt = 0;
+  try{ pendCnt = (typeof collectAllPendingApprovals==='function') ? collectAllPendingApprovals(u).length : 0; }catch(e){}
+  if(!overdue.length && !due.length && !soon.length && !pOver.length && !pSoon.length && !pendCnt){
+    return `<div class="card" style="border-left:5px solid #16a34a;background:#f0fdf4;margin-bottom:12px"><b style="color:#166534">✅ Không có công việc/dự án sắp hết hạn hay quá hạn. Không có nội dung chờ bạn duyệt.</b></div>`;
+  }
+  const chip=(n,txt,bg,fg)=> n?`<span style="display:inline-block;background:${bg};color:${fg};padding:4px 10px;border-radius:99px;font-size:12px;font-weight:700;margin:2px">${txt}: ${n}</span>`:'';
+  const sample = [...overdue,...due,...soon].slice(0,6).map(t=>{
+    const st=deadlineStatus(t);
+    const tag = st==='overdue'?'🚨 QUÁ HẠN':(st==='due'?'⏰ HẾT HẠN HÔM NAY':'⏳ sắp hết hạn');
+    const who = u.role==='employee' ? '' : ' — '+escapeHtml((db.users.find(x=>x.id===t.assigneeId)||{}).name||'');
+    return `<li><b>${escapeHtml(t.title||'')}</b>${who} <span class="muted">(${tag} · hạn ${fmtDate(t.dueDate)})</span></li>`;
+  }).join('');
+  const red = overdue.length || due.length || pOver.length;
+  const goView = u.role==='employee' ? 'my-tasks' : 'tasks';
+  return `<div class="card" style="border-left:5px solid ${red?'#dc2626':'#f59e0b'};background:${red?'#fef2f2':'#fffbeb'};margin-bottom:12px">
+    <h3 style="margin:0 0 6px 0;color:${red?'#991b1b':'#92400e'}">🔔 Thông báo nhanh — nội dung sắp hết hạn / quá hạn / chờ duyệt</h3>
+    <div>${chip(overdue.length,'Công việc QUÁ HẠN','#fee2e2','#991b1b')}${chip(due.length,'Hết hạn hôm nay','#fed7aa','#9a3412')}${chip(soon.length,'CV sắp hết hạn','#fef3c7','#92400e')}${chip(pOver.length,'Dự án quá hạn','#fee2e2','#991b1b')}${chip(pSoon.length,'Dự án sắp hết hạn','#fef3c7','#92400e')}${chip(pendCnt,'Chờ bạn duyệt','#dbeafe','#1e40af')}</div>
+    ${sample?`<ul style="margin:8px 0 0 0;padding-left:20px;font-size:13px">${sample}</ul>`:''}
+    <div style="margin-top:8px"><button class="btn sm" onclick="navTo('${goView}')">📋 Mở bảng công việc</button></div>
+  </div>`;
+}
+
+function autoKpiScores(user, period){
+  const db=getDB();
+  const p = period || thisPeriod();
+  const parts = p.split('-').map(Number);
+  const yy=parts[0], mm=parts[1];
+  const mStart = new Date(yy, mm-1, 1).getTime();
+  const mEnd   = new Date(yy, mm, 0, 23,59,59).getTime();
+  const tasks = (db.tasks||[]).filter(t=>{
+    if(t.assigneeId!==user.id) return false;
+    const due=t.dueDate||0, done=t.confirmedAt||0;
+    return (due>=mStart && due<=mEnd) || (done>=mStart && done<=mEnd) || (due && due<=mEnd && t.status!=='done');
+  });
+  const areaKey = t => t.area ? t.area : (t.projectId ? 'project' : null);
+  const groups = {design:[], project:[], commercial:[]};
+  tasks.forEach(t=>{ const k=areaKey(t); if(groups[k]) groups[k].push(t); });
+  const taskPoints = t=>{
+    if(t.status==='done'){
+      const onTime = !t.dueDate || ((t.confirmedAt||t.dueDate) <= (t.dueDate + 86400000));
+      return onTime ? 100 : 70;
+    }
+    const overdue = t.dueDate && (t.dueDate < Date.now());
+    return overdue ? 0 : 50;
+  };
+  const scoreArea = arr => arr.length ? Math.round(arr.reduce((s,t)=>s+taskPoints(t),0)/arr.length) : null;
+  let onTime=0, lateMiss=0;
+  tasks.forEach(t=>{
+    if(t.status==='done'){
+      const ot = !t.dueDate || ((t.confirmedAt||t.dueDate) <= (t.dueDate + 86400000));
+      ot ? onTime++ : lateMiss++;
+    } else if(t.dueDate && t.dueDate < Date.now()) lateMiss++;
+  });
+  const rated = onTime + lateMiss;
+  const discipline = rated ? Math.round(onTime/rated*100) : null;
+  return {
+    design: scoreArea(groups.design),
+    project: scoreArea(groups.project),
+    commercial: scoreArea(groups.commercial),
+    discipline,
+    counts:{design:groups.design.length, project:groups.project.length, commercial:groups.commercial.length, total:tasks.length}
+  };
+}
+function renderAutoKpiCard(user, period){
+  const a = autoKpiScores(user, period);
+  const cell=(label,score,cnt)=>`<div class="stat-card"><div class="label">${label}${cnt?` (${cnt} CV)`:''}</div><div class="value">${score==null?'—':score}</div></div>`;
+  return `<div class="card" style="border-left:5px solid #6366f1;background:#eef2ff">
+    <h3 style="margin:0 0 4px 0;color:#3730a3">🤖 KPI tự động từ công việc · ${fmtPeriod(period)}</h3>
+    <div class="hint">Phần mềm tự chấm dựa trên việc hoàn thành/không hoàn thành công việc được giao (cả việc chung và việc trong dự án). Đúng hạn = 100, hoàn thành trễ = 70, đang làm còn hạn = 50, quá hạn chưa xong = 0.</div>
+    <div class="stat-grid" style="margin-top:8px">
+      ${cell('Kinh Doanh', a.commercial, a.counts.commercial)}
+      ${cell('Quản lý dự án', a.project, a.counts.project)}
+      ${cell('Thiết kế', a.design, a.counts.design)}
+      ${cell('Ý thức (đúng hạn)', a.discipline, '')}
+    </div>
+  </div>`;
+}
+function renderAutoKpiSummary(emps, period){
+  if(!emps || !emps.length) return '';
+  const rows = emps.map(e=>{
+    const a = autoKpiScores(e, period);
+    if(a.counts.total===0) return '';
+    const f = v => v==null ? '<span class="muted">—</span>' : `<b>${v}</b>`;
+    return `<tr><td>${escapeHtml(e.name)}</td><td class="center">${f(a.commercial)}</td><td class="center">${f(a.project)}</td><td class="center">${f(a.design)}</td><td class="center">${f(a.discipline)}</td><td class="center">${a.counts.total}</td></tr>`;
+  }).filter(Boolean).join('');
+  if(!rows) return '';
+  return `<div class="card" style="border-left:5px solid #6366f1;background:#eef2ff">
+    <h3 style="margin:0 0 4px 0;color:#3730a3">🤖 KPI tự động từ công việc (tham khảo)</h3>
+    <div class="hint">Tự động tính từ mức độ hoàn thành công việc được giao (KD / DA / TK / Ý thức). Dùng tham khảo khi chấm KPI chính thức bên dưới.</div>
+    <div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Nhân viên</th><th>KD</th><th>DA</th><th>TK</th><th>Ý thức</th><th>Σ CV</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </div>`;
+}
+
+window.confirmTaskComplete = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  if(!t.pendingComplete){ toast('Không có đề xuất hoàn thành','warn'); return; }
+  t.status='done'; t.progress=100; t.pendingComplete=false;
+  t.confirmedAt=Date.now(); t.confirmedBy=currentUser()?.id;
+  saveDB(db); toast('Đã DUYỆT hoàn thành công việc'); render();
+};
+window.rejectTaskComplete = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  t.pendingComplete=false; t.pendingCompleteBy=null;
+  saveDB(db); toast('Đã TỪ CHỐI đề xuất hoàn thành','warn'); render();
+};
+
+window.openMoveTask = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  const u=currentUser();
+  let projects=db.contracts.slice();
+  if(u.role==='manager') projects=projects.filter(c=>c.companyId===u.companyId);
+  const opts=projects.map(c=>`<option value="${c.id}" ${t.projectId===c.id?'selected':''}>${escapeHtml(c.name||c.code||'(chưa đặt tên)')}</option>`).join('');
+  const curProj=t.projectId?db.contracts.find(c=>c.id===t.projectId):null;
+  openModal({title:'↔ Chuyển công việc vào / ra dự án', html:`
+    <div class="field"><b>Công việc:</b> ${escapeHtml(t.title||'')}</div>
+    <div class="field"><b>Hiện tại:</b> ${curProj?('🏗 Trong dự án: '+escapeHtml(curProj.name||curProj.code||'')):'📋 Công việc chung (ngoài dự án)'}</div>
+    <hr>
+    <div class="field"><label>Đưa VÀO dự án</label>
+      <select id="move-proj"><option value="">— Chọn dự án —</option>${opts}</select>
+    </div>
+    <button class="btn" onclick="doMoveTaskToProject('${t.id}')">➡ Đưa vào dự án đã chọn</button>
+    ${t.projectId?`<hr><button class="btn outline" onclick="doMoveTaskToGeneral('${t.id}')">⬅ Đưa RA thành công việc chung</button>`:''}
+  `});
+};
+window.doMoveTaskToProject = function(taskId){
+  const sel=document.getElementById('move-proj'); const pid=sel?sel.value:'';
+  if(!pid){ toast('Hãy chọn dự án','warn'); return; }
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  t.projectId=pid; saveDB(db); closeModal(); toast('Đã chuyển công việc vào dự án'); render();
+};
+window.doMoveTaskToGeneral = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  t.projectId=null; saveDB(db); closeModal(); toast('Đã chuyển ra thành công việc chung'); render();
+};
+
+window.ctSwitchStatus = function(stab){ window._ctStatusTab = stab; renderContractTabBody(); };
 
 /* ---------- Cảnh báo deadline khi đăng nhập / mỗi phiên ---------- */
 function checkDeadlineWarning(){
@@ -2402,8 +2625,9 @@ function checkDeadlineWarning(){
     myTasks = db.tasks;
   }
   const soonTasks = myTasks.filter(t=>deadlineStatus(t)==='soon');
+  const dueTasks = myTasks.filter(t=>deadlineStatus(t)==='due');
   const overdueTasks = myTasks.filter(t=>deadlineStatus(t)==='overdue');
-  if(!soonTasks.length && !overdueTasks.length) return;
+  if(!soonTasks.length && !overdueTasks.length && !dueTasks.length) return;
   // Hiển thị banner cố định góc phải trên
   const wrap = document.createElement('div');
   wrap.id = 'deadline-warn-popup';
@@ -2421,6 +2645,15 @@ function checkDeadlineWarning(){
         return `<li><b>${escapeHtml(t.title)}</b>${emp}<br><span class="muted">hết hạn ${fmtDate(t.dueDate)}</span></li>`;
       }).join('') + '</ul>';
     if(overdueTasks.length>5) html += `<div class="muted" style="font-size:11px">… và ${overdueTasks.length-5} công việc khác</div>`;
+  }
+  if(dueTasks.length){
+    html += `<div style="color:#9a3412;font-weight:600;margin-bottom:4px">⏰ ${dueTasks.length} công việc HẾT HẠN HÔM NAY (còn 0 ngày):</div>`;
+    html += '<ul style="margin:0 0 8px 0;padding-left:20px">' +
+      dueTasks.slice(0,5).map(t=>{
+        const emp = u.role==='employee' ? '' : ' — '+escapeHtml((db.users.find(x=>x.id===t.assigneeId)||{}).name||'');
+        return `<li><b>${escapeHtml(t.title)}</b>${emp}<br><span class="muted">hạn hôm nay ${fmtDate(t.dueDate)}</span></li>`;
+      }).join('') + '</ul>';
+    if(dueTasks.length>5) html += `<div class="muted" style="font-size:11px">… và ${dueTasks.length-5} công việc khác</div>`;
   }
   if(soonTasks.length){
     html += `<div style="color:#b45309;font-weight:600;margin-bottom:4px">⏰ ${soonTasks.length} công việc sắp hết hạn (≤ 3 ngày):</div>`;
@@ -2802,6 +3035,7 @@ function viewKPI(main, u){
       </div>
     </div>
     <div class="help-text">Chấm KPI cho từng nhân viên theo tháng. Nhân viên đa nhiệm sẽ có <b>nhiều dòng KPI</b> — mỗi dòng tương ứng 1 mảng (Thiết kế / Dự án / Thương mại). Lương cuối tháng = Lương cứng + Hỗ trợ + Σ Thưởng KPI từng mảng.</div>
+    ${renderAutoKpiSummary(emps, period)}
     <div class="tbl-wrap">
       <table>
         <thead><tr>
@@ -4085,6 +4319,7 @@ function renderMyTasksTable(){
     const behind = taskIsBehind(t);
     let dueStyle='', dueExtra='';
     if(stat==='overdue'){ dueStyle='color:#dc2626;font-weight:700;'; dueExtra='<span class="badge kpi-kem" style="margin-left:6px;font-size:10px">QUÁ HẠN</span>'; }
+    else if(stat==='due'){ dueStyle='color:#dc2626;font-weight:700;'; dueExtra='<span class="badge kpi-kem" style="margin-left:6px;font-size:10px">HẾT HẠN (còn 0 ngày)</span>'; }
     else if(stat==='soon'){ dueStyle='color:#b45309;font-weight:600;'; dueExtra='<span class="badge kpi-dat" style="margin-left:6px;font-size:10px">SẮP HẾT HẠN</span>'; }
     if(behind) dueExtra += '<span class="badge kpi-kem" style="margin-left:6px;font-size:10px">⚠ CHẬM</span>';
     const prog = Math.max(0, Math.min(100, Number(t.progress)||0));
@@ -4095,7 +4330,8 @@ function renderMyTasksTable(){
     const giver=db.users.find(x=>x.id===t.createdBy);
     const rowBg = behind && !isDoneRow ? 'background:#fff5f5;' : '';
     const rowStyle = isDoneRow ? 'text-decoration:line-through;color:#94a3b8;' : '';
-    const cb = `<input type="checkbox" ${isDoneRow?'checked':''} title="${isDoneRow?'Bỏ tích để chuyển về Đang thực hiện':'Tích để đánh dấu Hoàn thành'}" onchange="toggleTaskDone('${t.id}', this.checked)">`;
+    const pend = t.pendingComplete && !isDoneRow;
+    const cb = `<input type="checkbox" ${isDoneRow||pend?'checked':''} title="${isDoneRow?'Bỏ tích để chuyển về Đang thực hiện':(pend?'Đang chờ duyệt — bỏ tích để hủy đề xuất':'Tích để ĐỀ XUẤT hoàn thành (gửi quản lý duyệt)')}" onchange="toggleTaskDone('${t.id}', this.checked)">${pend?'<div style="font-size:9px;color:#92400e;font-weight:700">⏳ chờ duyệt</div>':''}`;
     return `<tr style="${rowBg}${rowStyle}">
       <td style="text-align:center">${cb}</td>
       <td><b>${escapeHtml(t.title)}</b></td>
@@ -4216,6 +4452,7 @@ function viewMyKPI(main, u){
   main.innerHTML=`
     <div class="page-head"><h1>🎯 KPI của tôi · ${fmtPeriod(period)}</h1></div>
     <div class="help-text">${asgs.length>1?`Bạn đang đảm nhiệm <b>${asgs.length} mảng</b> — mỗi mảng có 1 bản đánh giá KPI riêng, tổng lương = lương cứng + hỗ trợ + Σ thưởng KPI các mảng.`:'Đánh giá KPI tháng này.'}</div>
+    ${renderAutoKpiCard(u, period)}
     ${blocksHtml}
     <div class="card">
       <h3>Lịch sử KPI 12 tháng gần nhất (trung bình các mảng)</h3>
@@ -4530,6 +4767,11 @@ function renderContractDashboard(host){
   const inProgress = list.filter(c=>c.completionStatus==='inprogress').length;
   const completed = list.filter(c=>c.completionStatus==='completed').length;
 
+  const _isDoneC = c => c.completionStatus==='completed';
+  const _activeList = list.filter(c=>!_isDoneC(c));
+  const _doneList   = list.filter(c=> _isDoneC(c));
+  const _stab = (window._ctStatusTab==='done') ? 'done' : 'active';
+  const _showList = _stab==='done' ? _doneList : _activeList;
   host.innerHTML = `
     ${warnHtml}
     <div class="stat-grid">
@@ -4570,11 +4812,16 @@ function renderContractDashboard(host){
 
     <div class="help-text">💡 Double-click vào bất kỳ ô nào trong dòng dự án để mở cửa sổ chi tiết: Thông tin & HĐ, Tiến độ & Công việc, Hồ sơ PCCC, Vật tư — và xuất PDF / Excel / Word / In.</div>
 
+    <div class="tabs" style="margin-bottom:0">
+      <button class="tab ${_stab==='active'?'active':''}" onclick="ctSwitchStatus('active')">🚧 Dự án đang triển khai <span class="badge" style="background:#fef3c7;color:#92400e">${_activeList.length}</span></button>
+      <button class="tab ${_stab==='done'?'active':''}" onclick="ctSwitchStatus('done')">✅ Dự án đã hoàn thành <span class="badge" style="background:#dcfce7;color:#166534">${_doneList.length}</span></button>
+    </div>
     <div class="tbl-wrap">
       <table id="contract-table">
         <thead><tr>
           <th>STT</th>
           <th>Tên dự án</th>
+          <th>Chủ đầu tư</th>
           <th>Số hợp đồng</th>
           <th>Công ty thực hiện</th>
           <th class="right">Giá trị hợp đồng</th>
@@ -4582,7 +4829,7 @@ function renderContractDashboard(host){
           <th>Ngày kết thúc</th>
           <th>Tình trạng dự án</th>
         </tr></thead>
-        <tbody>${list.map((c,i)=>{
+        <tbody>${_showList.map((c,i)=>{
           const cc = contractCalc(c);
           const stat = contractDeadlineStatus(c);
           let trStyle='';
@@ -4591,6 +4838,7 @@ function renderContractDashboard(host){
           return `<tr ondblclick="openContractWindow('${c.id}')" style="cursor:pointer;${trStyle}" title="Double-click vào BẤT KỲ ô nào để mở cửa sổ chi tiết dự án (có thể thay đổi kích thước)">
             <td>${i+1}</td>
             <td><b>${escapeHtml(c.name||'')}</b></td>
+            <td>${escapeHtml(c.ownerName||'—')}</td>
             <td>${escapeHtml(c.code||'')}</td>
             <td><span class="badge co">${getCompany(c.companyId).code}</span></td>
             <td class="right"><b>${fmtVND(cc.value)}</b></td>
@@ -4598,7 +4846,7 @@ function renderContractDashboard(host){
             <td>${fmtDate(c.completeDate)}${stat==='soon'?' ⚠':''}${stat==='overdue'?' 🚨':''}</td>
             <td>${completionBadge(c.completionStatus)}</td>
           </tr>`;
-        }).join('') || '<tr><td colspan="8" class="empty">Chưa có dự án. Bấm "+ Thêm dự án" để bắt đầu.</td></tr>'}</tbody>
+        }).join('') || `<tr><td colspan="9" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -7222,6 +7470,7 @@ function renderPopupProgress(host, cid){
             const elapsedStr = hrs<1 ? `${Math.round(hrs*60)} phút` : `${hrs.toFixed(1)} giờ`;
             const typeBadge = {
               progress:'<span class="badge" style="background:#dbeafe;color:#1e40af">Tiến độ</span>',
+              done:'<span class="badge" style="background:#dcfce7;color:#166534">Hoàn thành</span>',
               slip:'<span class="badge" style="background:#fed7aa;color:#9a3412">Phiếu nhập</span>',
               doc:'<span class="badge" style="background:#e0e7ff;color:#3730a3">Hồ sơ KT</span>',
               rec:'<span class="badge" style="background:#fce7f3;color:#9d174d">Biên bản</span>'
