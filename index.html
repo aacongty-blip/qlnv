@@ -893,6 +893,10 @@ function renderNav(u){
     items.push({k:'my-info', t:'Thông tin cá nhân', i:'👤'});
     items.push({k:'my-kpi', t:'KPI của tôi', i:'🎯'});
   }
+  // Đặt 'Quản lý Thiết kế PCCC' ngay dưới 'Quản lý dự án'
+  const _ciPCCC = items.findIndex(it=>it.k==='contracts');
+  const _pcccItem = {k:'pccc-design', t:'Quản lý Thiết kế PCCC', i:'🏗️'};
+  if(_ciPCCC>=0) items.splice(_ciPCCC+1, 0, _pcccItem); else items.push(_pcccItem);
   items.push({k:'change-pass', t:'Đổi mật khẩu', i:'🔑'});
   const chatItem = `<div class="nav-item" onclick="closeSidebar();openChat()" style="position:relative">
       <span class="ico">💬</span> Tin nhắn
@@ -920,10 +924,10 @@ function roleLabel(r){
    employee: Nhân viên — Theo dõi công việc, Quản lý dự án (hạn chế), Chấm công,
              Thông tin cá nhân, KPI của tôi, Đổi mật khẩu */
 const ROLE_VIEWS = {
-  admin:    ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','backup','settings','change-pass'],
-  pm:       ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','change-pass'],
-  manager:  ['tasks','contracts','dashboard','change-pass'],
-  employee: ['my-tasks','contracts','dashboard','my-info','my-kpi','change-pass']
+  admin:    ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','backup','settings','change-pass','pccc-design'],
+  pm:       ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','change-pass','pccc-design'],
+  manager:  ['tasks','contracts','dashboard','change-pass','pccc-design'],
+  employee: ['my-tasks','contracts','dashboard','my-info','my-kpi','change-pass','pccc-design']
 };
 function canAccessView(role, key){
   return (ROLE_VIEWS[role]||[]).includes(key);
@@ -935,6 +939,240 @@ window.toggleSidebar=toggleSidebar; window.closeSidebar=closeSidebar;
 function wrapTablesForMobile(){ const root=document.getElementById('main-view'); if(!root) return; root.querySelectorAll('table').forEach(t=>{ const p=t.parentElement; if(!p) return; if(p.classList&&(p.classList.contains('tbl-wrap')||p.classList.contains('scroll-x'))) return; const w=document.createElement('div'); w.className='scroll-x'; p.insertBefore(w,t); w.appendChild(t); }); }
 window.wrapTablesForMobile=wrapTablesForMobile;
 window.navTo=navTo;
+/* ============================================================
+   MÔ-ĐUN: QUẢN LÝ THIẾT KẾ PCCC — tích hợp NATIVE vào phần mềm
+   - Là MỘT thành phần công việc của phần mềm (không còn iframe cách ly).
+   - Dùng CHUNG dữ liệu dự án (db.contracts) và nhân sự/quản lý/admin (db.users)
+     với mục "Quản lý dự án".
+   - Giữ 2 tab chính: Dashboard + Dự án. Cửa sổ chi tiết 1 dự án dùng đủ 6 tab
+     y như "Quản lý dự án" (openContractWindow).
+   ============================================================ */
+let _pcccSubTab = 'dashboard'; // dashboard | input
+function viewPCCCDesign(main, u){
+  window._pcccMode = true;   // chế độ PCCC: chỉ thao tác trên dự án thiết kế PCCC
+  const isEmployee = u.role==='employee';
+  if(isEmployee && _pcccSubTab==='input') _pcccSubTab='dashboard';
+  // Dùng chung engine "Quản lý dự án": đồng bộ tab con
+  _contractSubTab = (_pcccSubTab==='input' && !isEmployee) ? 'input' : 'dashboard';
+  const sheetLabels = { dashboard:'📊 Dashboard thiết kế PCCC', input:'🏗️ Danh sách dự án PCCC' };
+  main.innerHTML = `
+    <div class="page-head">
+      <h1>🏗️ Quản lý Thiết kế PCCC ${isEmployee?'<span class="muted" style="font-size:12px;font-weight:400">— Chế độ theo dõi</span>':''}</h1>
+      <div class="actions">
+        ${isEmployee?'':'<button class="btn success" onclick="openContractForm()">+ Thêm dự án PCCC</button>'}
+        ${isEmployee?'':'<button class="btn outline" title="Nhập dự án từ file JSON (xuất từ phần mềm Quản lý thiết kế PCCC)" onclick="document.getElementById(\'pcccJsonInput\').click()">📥 Nhập từ file JSON</button>'}
+        ${isEmployee?'':'<button class="btn outline" title="Nhập dữ liệu từ mô-đun PCCC cũ (lưu trong localStorage của trình duyệt)" onclick="migratePCCCData()">⬇ Nhập dữ liệu PCCC cũ</button>'}
+        <input type="file" id="pcccJsonInput" accept=".json,application/json" style="display:none" onchange="importPCCCJson(this)">
+      </div>
+    </div>
+    <div style="background:#0f766e;color:#fff;padding:6px 14px;border-radius:6px;font-size:13px;margin-bottom:10px">
+      📍 <b>Bạn đang xem:</b> <span id="cur-sheet-name">${sheetLabels[_pcccSubTab]||''}</span>
+    </div>
+    <div class="tabs">
+      <button class="tab ${_pcccSubTab==='dashboard'?'active':''}" onclick="switchPCCCTab('dashboard')">📊 Dashboard</button>
+      ${isEmployee?'':`<button class="tab ${_pcccSubTab==='input'?'active':''}" onclick="switchPCCCTab('input')">🏗️ Dự án</button>`}
+    </div>
+    <div class="help-text">💡 Mô-đun Thiết kế PCCC dùng <b>chung dữ liệu dự án và nhân sự</b> với mục Quản lý dự án. <b>Double-click</b> vào 1 dự án để mở cửa sổ chi tiết (có thể đổi kích thước) với đủ 6 tab: Tiến độ, Thông tin &amp; HĐ, Hồ sơ dự án, Vật tư, Bảo lãnh, Hồ sơ thanh toán.</div>
+    <div id="pccc-kpi-panel"></div>
+    <div id="contract-body"></div>
+  `;
+  renderContractTabBody();
+  renderPCCCKpiPanel();
+}
+window.viewPCCCDesign=viewPCCCDesign;
+
+/* ============================================================
+   PCCC — TỰ ĐỘNG TÍNH KPI NHÂN VIÊN TỪ TIẾN ĐỘ CÔNG VIỆC
+   - Tổng hợp toàn bộ nhiệm vụ thuộc dự án (db.tasks có projectId) theo từng NV.
+   - Điểm KPI = 50%×Tỉ lệ hoàn thành + 30%×Tiến độ TB + 20%×Tỉ lệ đúng hạn,
+     trừ điểm phạt cho việc quá hạn. Tự cập nhật khi tiến độ thay đổi.
+   ============================================================ */
+function computePCCCKpi(){
+  const db=getDB();
+  const now=Date.now();
+  const projectIds = new Set((db.contracts||[]).filter(c=>c.pcccDesign===true).map(c=>c.id));
+  const tasks=(db.tasks||[]).filter(t=>t.projectId && projectIds.has(t.projectId) && t.assigneeId);
+  const byEmp={};
+  tasks.forEach(t=>{
+    const id=t.assigneeId; if(!byEmp[id]) byEmp[id]={total:0,done:0,onTime:0,overdue:0,progSum:0};
+    const e=byEmp[id]; e.total++;
+    const prog = (t.status==='done') ? 100 : (Number(t.progress)||0);
+    e.progSum += prog;
+    const isOverdue = t.status!=='done' && t.dueDate && t.dueDate<now;
+    if(t.status==='done'){ e.done++; if(!t.dueDate || (t.completedAt? t.completedAt<=t.dueDate : true)) e.onTime++; }
+    if(isOverdue) e.overdue++;
+  });
+  const rows=Object.keys(byEmp).map(id=>{
+    const e=byEmp[id];
+    const compRate = e.total? e.done/e.total : 0;
+    const onTimeRate = e.total? e.onTime/e.total : 0;
+    const avgProg = e.total? e.progSum/e.total : 0;
+    let score = 50*compRate + 0.3*avgProg + 20*onTimeRate;
+    score -= Math.min(15, e.overdue*3);
+    score = Math.max(0, Math.min(100, Math.round(score)));
+    return {empId:id, total:e.total, done:e.done, onTime:e.onTime, overdue:e.overdue, compRate, onTimeRate, avgProg:Math.round(avgProg), score};
+  });
+  rows.sort((a,b)=> b.score-a.score);
+  return rows;
+}
+function kpiRank(s){
+  if(s>=85) return {label:'Xuất sắc', color:'#16a34a', bg:'#dcfce7'};
+  if(s>=70) return {label:'Tốt', color:'#0891b2', bg:'#cffafe'};
+  if(s>=50) return {label:'Đạt', color:'#d97706', bg:'#fef3c7'};
+  return {label:'Cần cải thiện', color:'#dc2626', bg:'#fee2e2'};
+}
+function renderPCCCKpiPanel(){
+  const host=document.getElementById('pccc-kpi-panel'); if(!host) return;
+  if(_pcccSubTab!=='dashboard'){ host.innerHTML=''; return; }
+  const db=getDB();
+  let rows=computePCCCKpi();
+  const u=currentUser();
+  if(u){
+    if(u.role==='manager'){ const ids=db.users.filter(x=>x.companyId===u.companyId).map(x=>x.id); rows=rows.filter(r=>ids.includes(r.empId)); }
+    else if(u.role==='employee'){ rows=rows.filter(r=>r.empId===u.id); }
+  }
+  const uname=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x?(x.name||x.username||'?'):'(đã xóa)'; };
+  const co=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x&&typeof getCompany==='function'?getCompany(x.companyId).code:''; };
+  const rolelb=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x&&typeof roleLabel==='function'?roleLabel(x.role):''; };
+  if(!rows.length){
+    host.innerHTML=`<div class="card"><h3 style="margin:0 0 6px">🎯 KPI nhân viên (tự động từ tiến độ)</h3><div class="empty" style="padding:18px">Chưa có nhiệm vụ dự án nào được giao cho nhân viên để tính KPI. Hãy giao việc trong tab <b>Tiến độ &amp; Công việc</b> của từng dự án.</div></div>`;
+    return;
+  }
+  const avg=Math.round(rows.reduce((s,r)=>s+r.score,0)/rows.length);
+  const bodyRows=rows.map((r,i)=>{
+    const rk=kpiRank(r.score);
+    return `<tr>
+      <td class="center">${i+1}</td>
+      <td><b>${escapeHtml(uname(r.empId))}</b><div class="hint muted">${escapeHtml(co(r.empId))}${rolelb(r.empId)?' · '+escapeHtml(rolelb(r.empId)):''}</div></td>
+      <td class="center">${r.total}</td>
+      <td class="center">${r.done}</td>
+      <td class="center">${(r.compRate*100).toFixed(0)}%</td>
+      <td class="center">${r.avgProg}%</td>
+      <td class="center" ${r.overdue?'style="color:#dc2626;font-weight:600"':''}>${r.overdue}</td>
+      <td class="center"><span style="display:inline-block;min-width:42px;font-weight:700;color:${rk.color}">${r.score}</span></td>
+      <td class="center"><span class="badge" style="background:${rk.bg};color:${rk.color}">${rk.label}</span></td>
+    </tr>`;
+  }).join('');
+  host.innerHTML=`
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+        <h3 style="margin:0">🎯 KPI nhân viên — tự động tính từ tiến độ công việc</h3>
+        <span class="muted" style="font-size:12px">Điểm TB nhóm: <b style="color:#0f766e">${avg}</b>/100</span>
+        <span style="margin-left:auto;font-size:11px;color:#64748b">Cập nhật tự động khi tiến độ thay đổi</span>
+      </div>
+      <div class="hint muted" style="margin-bottom:8px">Công thức: <b>50%</b> Tỉ lệ hoàn thành + <b>30%</b> Tiến độ trung bình + <b>20%</b> Tỉ lệ đúng hạn − điểm phạt việc quá hạn (−3đ/việc, tối đa −15).</div>
+      <div class="scroll-x"><table class="data-table" style="width:100%">
+        <thead><tr>
+          <th class="center">#</th><th>Nhân viên</th><th class="center">Số việc</th><th class="center">Hoàn thành</th>
+          <th class="center">Tỉ lệ HT</th><th class="center">Tiến độ TB</th><th class="center">Quá hạn</th>
+          <th class="center">Điểm KPI</th><th class="center">Xếp loại</th>
+        </tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table></div>
+    </div>`;
+}
+window.renderPCCCKpiPanel=renderPCCCKpiPanel;
+window.switchPCCCTab = function(t){
+  _pcccSubTab = t;
+  _contractSubTab = t;
+  const sheetLabels = { dashboard:'📊 Dashboard thiết kế PCCC', input:'🏗️ Danh sách dự án PCCC' };
+  const lbl=document.getElementById('cur-sheet-name'); if(lbl) lbl.textContent = sheetLabels[t]||'';
+  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+  const ev = window.event; if(ev && ev.currentTarget) ev.currentTarget.classList.add('active');
+  renderContractTabBody();
+  renderPCCCKpiPanel();
+};
+
+/* --- Hàm chung: nhập danh sách dự án PCCC (đánh dấu pcccDesign=true) --- */
+function _pcccImportProjects(oldProjects){
+  const db = getDB();
+  db.tasks = db.tasks||[]; db.contracts = db.contracts||[];
+  const toTs = d => d ? (isNaN(new Date(d).getTime())?null:new Date(d).getTime()) : null;
+  let added=0, skipped=0, taskCount=0;
+  oldProjects.forEach(p=>{
+    const code = (p.code || ('PCCC-'+(p.id||uid('p')))).trim();
+    if(db.contracts.some(c=>(c.code||'').trim()===code)){ skipped++; return; }
+    const c = {
+      id: uid('c'), createdAt: Date.now(), createdBy: (currentUser()||{}).id,
+      code, name: p.name||code,
+      companyId: 'tanvien',
+      completionStatus: (p.status==='Hoàn thành')?'completed':(p.status==='Hủy'?'cancelled':'inprogress'),
+      settlementStatus: '',
+      signDate: toTs(p.contractDate) || toTs(p.designStart),
+      completeDate: toTs(p.designDeadline),
+      value: Number(p.contractValue)||0,
+      paidValue: Number(p.paidAmount)||0,
+      payments: [], addendums: [],
+      ownerName: p.investor||'',
+      ownerContact: p.investorContactName||'',
+      ownerPhone: p.investorContactPhone||'',
+      siteAddress: p.location||'',
+      designerCompany: p.architectCompany||'',
+      designerHead: p.architectManagerName||'',
+      designerPhone: p.architectManagerPhone||'',
+      note: [p.contractNo?('Số HĐ: '+p.contractNo):'', p.pccc105FileCode?('Mã thẩm duyệt 105: '+p.pccc105FileCode):'', p.pc07OfficerName?('CB PC07: '+p.pc07OfficerName+(p.pc07OfficerPhone?(' - '+p.pc07OfficerPhone):'')):'', p.notes||''].filter(Boolean).join(' · '),
+      driveLinks: {}, materials: [],
+      pcccDesign: true, _fromPCCC: true
+    };
+    db.contracts.push(c);
+    (p.tasks||[]).forEach(t=>{
+      db.tasks.push({
+        id: uid('t'), createdAt: Date.now(), createdBy: (currentUser()||{}).id,
+        projectId: c.id,
+        title: t.name || t.title || 'Công việc thiết kế',
+        assigneeId: t.assigneeId || '',
+        status: (t.status==='Hoàn thành')?'done':((t.status==='Tạm dừng'||t.status==='Mới tạo')?'new':'inprogress'),
+        progress: Number(t.progress)||0,
+        dueDate: toTs(t.deadline),
+        note: t.note || t.description || '',
+        _fromPCCC: true
+      });
+      taskCount++;
+    });
+    added++;
+  });
+  saveDB(db);
+  return {added, skipped, taskCount};
+}
+
+/* --- Nhập (migrate) dữ liệu từ mô-đun PCCC cũ lưu trong localStorage trình duyệt --- */
+window.migratePCCCData = function(){
+  let raw=null;
+  try{ raw = localStorage.getItem('ql_thietke_pccc_v1'); }catch(e){}
+  if(!raw){ toast('Không tìm thấy dữ liệu PCCC cũ trong trình duyệt này. Dữ liệu cũ chỉ đọc được trên đúng máy/trình duyệt đã từng dùng mô-đun PCCC. Bạn có thể dùng "📥 Nhập từ file JSON".','error'); return; }
+  let parsed; try{ parsed = JSON.parse(raw); }catch(e){ toast('Dữ liệu PCCC cũ bị lỗi định dạng, không đọc được.','error'); return; }
+  const oldProjects = (parsed && parsed.projects) || [];
+  if(!oldProjects.length){ toast('Dữ liệu PCCC cũ không có dự án nào để nhập.','warn'); return; }
+  if(!confirm('Tìm thấy '+oldProjects.length+' dự án trong dữ liệu PCCC cũ. Nhập các dự án thiết kế PCCC (bỏ qua dự án trùng mã)?')) return;
+  const r=_pcccImportProjects(oldProjects);
+  toast('Đã nhập '+r.added+' dự án PCCC'+(r.taskCount?(' + '+r.taskCount+' công việc'):'')+(r.skipped?(' (bỏ qua '+r.skipped+' dự án trùng mã)'):'')+'.','success');
+  _pcccSubTab='input'; render();
+};
+
+/* --- Nhập dự án thiết kế PCCC từ file JSON (xuất từ phần mềm Quản lý thiết kế PCCC) --- */
+window.importPCCCJson = function(input){
+  const file = input && input.files && input.files[0];
+  if(!file){ return; }
+  const reader = new FileReader();
+  reader.onload = function(e){
+    let parsed;
+    try{ parsed = JSON.parse(e.target.result); }
+    catch(err){ toast('File JSON không hợp lệ / sai định dạng.','error'); input.value=''; return; }
+    // Hỗ trợ: {projects:[...]} hoặc mảng [...] hoặc {data:{projects:[...]}}
+    let oldProjects = [];
+    if(Array.isArray(parsed)) oldProjects = parsed;
+    else if(parsed && Array.isArray(parsed.projects)) oldProjects = parsed.projects;
+    else if(parsed && parsed.data && Array.isArray(parsed.data.projects)) oldProjects = parsed.data.projects;
+    if(!oldProjects.length){ toast('Không tìm thấy danh sách dự án trong file JSON (cần khóa "projects").','warn'); input.value=''; return; }
+    if(!confirm('Tìm thấy '+oldProjects.length+' dự án trong file JSON. Nhập các dự án thiết kế PCCC (bỏ qua dự án trùng mã)?')){ input.value=''; return; }
+    const r=_pcccImportProjects(oldProjects);
+    toast('Đã nhập '+r.added+' dự án PCCC'+(r.taskCount?(' + '+r.taskCount+' công việc'):'')+(r.skipped?(' (bỏ qua '+r.skipped+' dự án trùng mã)'):'')+'.','success');
+    input.value='';
+    _pcccSubTab='input'; render();
+  };
+  reader.onerror = function(){ toast('Không đọc được file JSON.','error'); input.value=''; };
+  reader.readAsText(file, 'utf-8');
+};
 function routeTo(v){
   const main=document.getElementById('main-view');
   if(!main) return;
@@ -954,7 +1192,8 @@ function routeTo(v){
     'my-tasks': viewMyTasks,
     'my-kpi': viewMyKPI,
     'change-pass': viewChangePass,
-    'contracts': viewContracts
+    'contracts': viewContracts,
+    'pccc-design': viewPCCCDesign
   };
   // 🔒 Chặn truy cập view không thuộc quyền của vai trò
   if(u && !canAccessView(u.role, v)){
@@ -4737,6 +4976,7 @@ let _contractSort = {field:'signDate', dir:'desc'};
 let _contractFilter = null; // contractId nếu lọc
 
 function viewContracts(main, u){
+  window._pcccMode = false;   // Quản lý dự án: KHÔNG hiển thị dự án thiết kế PCCC
   const isEmployee = u.role==='employee';
   // NV không được xem tab "Nhập đầu vào" → ép về Dashboard
   if(isEmployee && _contractSubTab==='input') _contractSubTab='dashboard';
@@ -4786,10 +5026,14 @@ function renderContractTabBody(){
 /* ============================================================
    SHEET 1 — Dashboard hợp đồng
    ============================================================ */
+/* Lọc theo phạm vi: PCCC chỉ thấy dự án thiết kế PCCC; Quản lý dự án loại trừ dự án PCCC */
+function pcccScopeContracts(list){
+  return window._pcccMode ? list.filter(c=>c.pcccDesign===true) : list.filter(c=>!c.pcccDesign);
+}
 function renderContractDashboard(host){
   const db=getDB();
   const u=currentUser();
-  let list = db.contracts.slice();
+  let list = pcccScopeContracts(db.contracts.slice());
   if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
   // Tìm kiếm
   if(_contractFilter) list = list.filter(c=>c.id===_contractFilter);
@@ -4802,11 +5046,12 @@ function renderContractDashboard(host){
     return dir==='asc'?(av-bv):(bv-av);
   });
 
-  // Cảnh báo deadline
-  const overdue = db.contracts.filter(c=>contractDeadlineStatus(c)==='overdue');
-  const soon    = db.contracts.filter(c=>contractDeadlineStatus(c)==='soon');
+  // Cảnh báo deadline (chỉ trong phạm vi đang xem: PCCC hoặc Quản lý dự án)
+  const _scoped = pcccScopeContracts(db.contracts);
+  const overdue = _scoped.filter(c=>contractDeadlineStatus(c)==='overdue');
+  const soon    = _scoped.filter(c=>contractDeadlineStatus(c)==='soon');
   // Dự án có ≥ 1 task chậm tiến độ
-  const slowProjects = db.contracts.filter(c=>db.tasks.some(t=>t.projectId===c.id && taskIsBehind(t)));
+  const slowProjects = _scoped.filter(c=>db.tasks.some(t=>t.projectId===c.id && taskIsBehind(t)));
   let warnHtml = '';
   if(overdue.length || soon.length || slowProjects.length){
     const hasRed = overdue.length || slowProjects.length;
@@ -6571,7 +6816,7 @@ window.saveContractForm = function(id){
   if(!name||!code){ document.getElementById('cf-err').textContent='Nhập đủ Tên + Số HĐ'; return; }
   let c;
   if(id){ c = db.contracts.find(x=>x.id===id); }
-  else { c={id:uid('c'), createdAt:Date.now(), createdBy:currentUser().id}; db.contracts.push(c); }
+  else { c={id:uid('c'), createdAt:Date.now(), createdBy:currentUser().id}; if(window._pcccMode) c.pcccDesign=true; db.contracts.push(c); }
   c.name=name; c.code=code;
   c.companyId=v('cf-company');
   c.completionStatus=v('cf-comp');
@@ -6636,7 +6881,7 @@ window.saveContractForm = function(id){
    ============================================================ */
 function renderContractInputList(host){
   const db=getDB(); const u=currentUser();
-  let list = db.contracts.slice();
+  let list = pcccScopeContracts(db.contracts.slice());
   if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
   list.sort((a,b)=>(b.signDate||0)-(a.signDate||0));
   host.innerHTML = `
@@ -6668,7 +6913,7 @@ function renderContractInputList(host){
    ============================================================ */
 function renderContractMaterialsList(host){
   const db=getDB(); const u=currentUser();
-  let list = db.contracts.slice();
+  let list = pcccScopeContracts(db.contracts.slice());
   if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
   list.sort((a,b)=>(b.signDate||0)-(a.signDate||0));
   host.innerHTML = `
@@ -8355,6 +8600,7 @@ window.deletePayDoc = function(cid, did){
   let _rootRefs  = [];
   let _wins      = {};   // convId -> {collapsed:bool} các cửa sổ đang mở
   let _listOpen  = false;
+  let _panelTab  = 'convs';   // 'convs' | 'contacts'
   let _zTop      = 9100;
   let _drag      = null;
   let _typingTO  = {};   // convId -> timeout
@@ -8371,7 +8617,7 @@ window.deletePayDoc = function(cid, did){
     const m = me(); if(!m) return [];
     const db = getDB();
     let list = (db.users||[]).filter(u=>u.id !== m.id);
-    if(m.role !== 'admin' && m.role !== 'pm'){ list = list.filter(u=>u.companyId === m.companyId); }
+    /* LIÊN CÔNG TY: mọi người ở mọi công ty đều thấy & nhắn được với nhau (bỏ lọc theo companyId) */
     return list.sort((a,b)=> (a.name||'').localeCompare(b.name||'', 'vi'));
   }
   function dmId(a,b){ return 'dm_' + [a,b].sort().join('__'); }
@@ -8510,6 +8756,55 @@ window.deletePayDoc = function(cid, did){
   window.openChat=openList;   // mục menu "Tin nhắn"
   window.chatCloseList=closeList;
 
+  /* ---- Cửa sổ Tin nhắn: kéo di chuyển / phóng to / thu nhỏ ---- */
+  window.chatPanelDragStart=function(ev){
+    if(ev.target.closest('button')) return;
+    const p=document.getElementById('chListPanel'); if(!p) return;
+    if(p.classList.contains('ch-maximized')) return; // đang full màn hình thì không kéo
+    const r=p.getBoundingClientRect();
+    _drag={el:p,sx:ev.clientX,sy:ev.clientY,ox:r.left,oy:r.top};
+    document.body.style.userSelect='none'; ev.preventDefault();
+  };
+  window.chatPanelMax=function(){
+    const p=document.getElementById('chListPanel'); if(!p) return;
+    p.classList.remove('ch-minimized');
+    const on=p.classList.toggle('ch-maximized');
+    if(on){ p.style.left=''; p.style.top=''; p.style.right=''; p.style.bottom=''; }
+    else { p.style.right='22px'; p.style.bottom='90px'; p.style.left='auto'; p.style.top='auto'; }
+  };
+  window.chatPanelMin=function(){
+    const p=document.getElementById('chListPanel'); if(!p) return;
+    p.classList.remove('ch-maximized');
+    p.classList.toggle('ch-minimized');
+  };
+
+  /* ---- Xóa toàn bộ cuộc trò chuyện ---- */
+  window.chatDeleteConv=function(convId){
+    const m=me(); if(!m) return; const c=_convs[convId]; if(!c) return;
+    const nm=convTitle(convId);
+    if(!confirm('Xóa TOÀN BỘ nội dung cuộc trò chuyện với "'+nm+'"?\n\nThao tác này xóa hẳn mọi tin nhắn trong cuộc trò chuyện cho tất cả thành viên và không thể hoàn tác.')) return;
+    try{
+      // Xóa toàn bộ tin nhắn + đánh dấu đã đọc/đang gõ
+      _ref('conversations/'+convId+'/messages').remove();
+      _ref('conversations/'+convId+'/reads').remove();
+      _ref('conversations/'+convId+'/typing').remove();
+      if(c.type==='dm'){
+        // DM: gỡ khỏi danh sách của cả hai phía + xóa meta
+        Object.keys(c.members||{}).forEach(uid=> _ref('userIndex/'+uid+'/'+convId).remove());
+        _ref('conversations/'+convId+'/meta').remove();
+      } else {
+        // Nhóm: chỉ gỡ khỏi danh sách của mình
+        _ref('userIndex/'+m.id+'/'+convId).remove();
+      }
+    }catch(e){ console.warn('deleteConv err',e); }
+    // Dọn cục bộ
+    if(_convRefs[convId]){ _convRefs[convId].forEach(r=>{try{r.ref.off(r.ev,r.cb);}catch(e){}}); delete _convRefs[convId]; }
+    delete _convs[convId]; delete _msgs[convId]; delete _reads[convId]; delete _typing[convId];
+    if(_wins[convId]) chatCloseWin(convId);
+    fillConvList(''); recomputeBadge();
+    if(typeof toast==='function') toast('Đã xóa cuộc trò chuyện');
+  };
+
   function convLastTs(convId){ const msgs=_msgs[convId]||{}; let t=(_convs[convId]||{}).createdAt||0; for(const id in msgs){ if((msgs[id].ts||0)>t) t=msgs[id].ts; } return t; }
   function convTitle(convId){ const c=_convs[convId]; if(!c) return 'Hội thoại'; if(c.type==='group') return c.name||'Nhóm'; const m=me(); return uname(Object.keys(c.members||{}).find(x=>x!==m.id)); }
   function convLastText(convId){
@@ -8524,22 +8819,43 @@ window.deletePayDoc = function(cid, did){
   }
   function renderList(){
     const p=document.getElementById('chListPanel'); if(!p) return;
+    const isConv = _panelTab!=='contacts';
     p.innerHTML=`
-      <div class="ch-head ch-list-head">
+      <div class="ch-head ch-list-head" id="chListHead" onmousedown="chatPanelDragStart(event)" ondblclick="chatPanelMax()">
         <b>💬 Tin nhắn</b>
-        <div style="display:flex;gap:6px">
-          <button class="ch-ic" title="Tạo nhóm" onclick="chatNewGroup()">👥+</button>
-          <button class="ch-ic" title="Đóng" onclick="chatCloseList()">✕</button>
+        <div style="display:flex;gap:6px;margin-left:auto">
+          <button class="ch-ic" title="Mở toàn màn hình" onclick="chatPanelMax()">⛶</button>
+          <button class="ch-ic" title="Thu nhỏ" onclick="chatPanelMin()">—</button>
+          <button class="ch-ic" title="Tắt cửa sổ tin nhắn" onclick="chatCloseList()">✕</button>
         </div>
       </div>
-      <div class="ch-search"><input id="chSearch" placeholder="Tìm người hoặc nhóm…" oninput="chatFilter(this.value)"></div>
+      <div class="ch-tabs">
+        <button class="ch-tab ${isConv?'active':''}" data-ptab="convs" onclick="chatPanelTab('convs')">💬 Tin nhắn</button>
+        <button class="ch-tab ${!isConv?'active':''}" data-ptab="contacts" onclick="chatPanelTab('contacts')">👤 Danh bạ</button>
+        <button class="ch-tab ch-tab-act" title="Tạo nhóm trò chuyện" onclick="chatNewGroup()">👥 Tạo nhóm</button>
+      </div>
+      <div class="ch-search"><input id="chSearch" placeholder="${isConv?'Tìm cuộc trò chuyện…':'Tìm người để nhắn…'}" oninput="chatFilter(this.value)"></div>
       <div class="ch-body">
-        <div id="chConvList"></div>
-        <div class="ch-sub">Danh bạ</div>
-        <div id="chContactList"></div>
+        <div id="chConvWrap" style="display:${isConv?'block':'none'}">
+          <div id="chConvList"></div>
+        </div>
+        <div id="chContactWrap" style="display:${isConv?'none':'block'}">
+          <div class="ch-sub">Danh bạ — chọn người để bắt đầu trò chuyện</div>
+          <div id="chContactList"></div>
+        </div>
       </div>`;
     fillConvList(''); fillContactList('');
   }
+  window.chatPanelTab=function(t){
+    _panelTab = (t==='contacts')?'contacts':'convs';
+    const isConv = _panelTab!=='contacts';
+    const cw=document.getElementById('chConvWrap'); const tw=document.getElementById('chContactWrap');
+    if(cw) cw.style.display=isConv?'block':'none';
+    if(tw) tw.style.display=isConv?'none':'block';
+    document.querySelectorAll('#chListPanel .ch-tab[data-ptab]').forEach(b=>b.classList.toggle('active', b.dataset.ptab===_panelTab));
+    const s=document.getElementById('chSearch'); if(s){ s.value=''; s.placeholder=isConv?'Tìm cuộc trò chuyện…':'Tìm người để nhắn…'; }
+    fillConvList(''); fillContactList('');
+  };
   window.chatFilter=function(q){ fillConvList(q); fillContactList(q); };
   function fillConvList(q){
     const host=document.getElementById('chConvList'); if(!host) return; q=(q||'').toLowerCase();
@@ -8552,7 +8868,8 @@ window.deletePayDoc = function(cid, did){
         <div class="ch-row-main">
           <div class="ch-row-top"><span class="ch-name">${esc(convTitle(id))}</span><span class="ch-time">${relTime(convLastTs(id))}</span></div>
           <div class="ch-row-sub"><span class="ch-prev">${convLastText(id)}</span>${un?`<span class="ch-pill">${un>99?'99+':un}</span>`:''}</div>
-        </div></div>`;
+        </div>
+        <button class="ch-rowdel" title="Xóa toàn bộ cuộc trò chuyện này" onclick="event.stopPropagation();chatDeleteConv('${id}')">🗑</button></div>`;
     }).join('');
   }
   function fillContactList(q){
@@ -8562,7 +8879,7 @@ window.deletePayDoc = function(cid, did){
     host.innerHTML=list.map(u=>{
       const co=(typeof getCompany==='function')?getCompany(u.companyId):null;
       const sub=(co?co.code+' · ':'')+(typeof roleLabel==='function'?roleLabel(u.role):u.role);
-      return `<div class="ch-row" onclick="chatStartDM('${u.id}')">${avatar(u.id,42)}
+      return `<div class="ch-row" onclick="chatStartDM('${u.id}');chatPanelTab('convs')">${avatar(u.id,42)}
         <div class="ch-row-main">
           <div class="ch-row-top"><span class="ch-name">${esc(u.name||u.username)}</span></div>
           <div class="ch-row-sub"><span class="ch-prev">${esc(sub)}${isOnline(u.id)?' · <span style=\"color:#16a34a\">Đang hoạt động</span>':''}</span></div>
@@ -8620,6 +8937,7 @@ window.deletePayDoc = function(cid, did){
           <div class="ch-cstatus" id="chCStatus_${convId}"></div>
         </div>
         ${grpBtn}
+        <button class="ch-ic" title="Mở toàn màn hình" onclick="chatWinMax('${convId}')">⛶</button>
         <button class="ch-ic" title="Thu gọn" onclick="chatToggleWin('${convId}')">—</button>
         <button class="ch-ic" title="Đóng" onclick="chatCloseWin('${convId}')">✕</button>
       </div>
@@ -8643,6 +8961,14 @@ window.deletePayDoc = function(cid, did){
   window.chatCloseWin=function(convId){
     const el=document.getElementById('chWin_'+convId); if(el) el.remove();
     delete _wins[convId];
+  };
+  window.chatWinMax=function(convId){
+    const el=document.getElementById('chWin_'+convId); if(!el) return;
+    el.classList.remove('collapsed'); if(_wins[convId]) _wins[convId].collapsed=false;
+    const on=el.classList.toggle('ch-maximized');
+    if(on){ el.style.left=''; el.style.top=''; el.style.right=''; el.style.bottom=''; el.style.width=''; el.style.height=''; }
+    else { el.style.right='92px'; el.style.bottom='22px'; el.style.left='auto'; el.style.top='auto'; }
+    bringToFront(convId); updateMessages(convId);
   };
   function bringToFront(convId){ const el=document.getElementById('chWin_'+convId); if(el) el.style.zIndex=(++_zTop); }
 
@@ -8732,14 +9058,14 @@ window.deletePayDoc = function(cid, did){
     document.querySelectorAll('.ch-popmenu').forEach(x=>x.remove());
     const menu=document.createElement('div'); menu.className='ch-popmenu';
     menu.innerHTML=`<div onclick="chatRecall('${convId}','${msgId}')">↩ Thu hồi (mọi người)</div>
-                    <div onclick="chatDelete('${convId}','${msgId}')">🗑 Xóa hẳn</div>`;
+                    <div onclick="chatDelete('${convId}','${msgId}')">🗑 Xóa tin nhắn của tôi</div>`;
     document.body.appendChild(menu);
     const r=ev.target.getBoundingClientRect();
     menu.style.left=Math.min(r.left,window.innerWidth-180)+'px'; menu.style.top=(r.bottom+4)+'px';
     setTimeout(()=>document.addEventListener('click',function h(){ menu.remove(); document.removeEventListener('click',h); }),0);
   };
   window.chatRecall=function(convId,msgId){ _ref('conversations/'+convId+'/messages/'+msgId).update({recalled:true,text:null,data:null,type:'text'}); };
-  window.chatDelete=function(convId,msgId){ _ref('conversations/'+convId+'/messages/'+msgId).remove(); };
+  window.chatDelete=function(convId,msgId){ if(!confirm('Xóa hẳn tin nhắn này của bạn? Thao tác không thể hoàn tác.')) return; _ref('conversations/'+convId+'/messages/'+msgId).remove(); if(typeof toast==='function') toast('Đã xóa tin nhắn'); };
 
   /* ---------- ĐANG GÕ ---------- */
   window.chatOnType=function(convId){
@@ -8776,13 +9102,21 @@ window.deletePayDoc = function(cid, did){
   };
 
   /* ---------- NHÓM ---------- */
+  function ckMeta(u){
+    const co=(typeof getCompany==='function'?getCompany(u.companyId).code:'');
+    const rl=(typeof roleLabel==='function'?roleLabel(u.role):'');
+    return [co,rl].filter(Boolean).join(' · ');
+  }
+  function ckRow(u){
+    return `<label class="ch-ckrow"><input type="checkbox" value="${u.id}"><span class="ch-ckname">${esc(u.name||u.username)}</span><span class="ch-ckmeta">${esc(ckMeta(u))}</span></label>`;
+  }
   window.chatNewGroup=function(){
     const list=contacts();
-    const rows=list.map(u=>`<label class="ch-ck"><input type="checkbox" value="${u.id}"> ${esc(u.name||u.username)} <span class="muted" style="font-size:11px">(${esc((typeof getCompany==='function'?getCompany(u.companyId).code:''))})</span></label>`).join('');
+    const rows=list.map(ckRow).join('');
     openModal({ title:'👥 Tạo nhóm trò chuyện',
       html:`<div style="margin-bottom:10px"><input id="grpName" placeholder="Tên nhóm…" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px"></div>
             <div style="font-size:12px;color:#64748b;margin-bottom:6px">Chọn thành viên:</div>
-            <div style="max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:6px">${rows||'<i>Không có liên hệ</i>'}</div>`,
+            <div style="max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:6px">${rows||'<i>Không có liên hệ</i>'}</div>`,
       footer:`<button class="btn outline" onclick="closeModal()">Hủy</button> <button class="btn" onclick="chatCreateGroup()">Tạo nhóm</button>` });
   };
   window.chatCreateGroup=function(){
@@ -8802,12 +9136,29 @@ window.deletePayDoc = function(cid, did){
   };
   window.chatGroupInfo=function(convId){
     const c=_convs[convId]; if(!c) return;
-    const memHtml=Object.keys(c.members||{}).map(uid=>`<div style="display:flex;align-items:center;gap:8px;padding:4px 0">${avatar(uid,30)} <span>${esc(uname(uid))}</span>${uid===c.createdBy?' <span class="muted" style="font-size:11px">(người tạo)</span>':''}</div>`).join('');
+    const m=me(); const isCreator = m && c.createdBy===m.id;
+    const memHtml=Object.keys(c.members||{}).map(uid=>{
+      const tag = uid===c.createdBy ? ' <span class="muted" style="font-size:11px">(người tạo)</span>' : (uid===(m&&m.id) ? ' <span class="muted" style="font-size:11px">(bạn)</span>' : '');
+      const kick = (isCreator && uid!==c.createdBy) ? `<button class="ch-ic" style="margin-left:auto;background:#fee2e2;color:#dc2626;width:24px;height:24px;font-size:13px" title="Mời ${esc(uname(uid))} ra khỏi nhóm" onclick="chatKickMember('${convId}','${uid}')">✕</button>` : '';
+      return `<div class="ch-mem-row">${avatar(uid,30)} <span class="ch-ckname">${esc(uname(uid))}</span>${tag}${kick}</div>`;
+    }).join('');
     const addable=contacts().filter(u=>!c.members[u.id]);
-    const addHtml=addable.length?`<div class="ch-sub" style="margin-top:10px">Thêm thành viên</div>`+addable.map(u=>`<label class="ch-ck"><input type="checkbox" value="${u.id}"> ${esc(u.name||u.username)}</label>`).join(''):'';
+    const addHtml=addable.length?`<div class="ch-sub" style="margin-top:10px">Thêm thành viên</div><div style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto">`+addable.map(ckRow).join('')+`</div>`:'';
     openModal({ title:'👥 '+(c.name||'Nhóm'),
       html:`<div style="font-size:12px;color:#64748b;margin-bottom:4px">Thành viên (${Object.keys(c.members||{}).length})</div>${memHtml}${addHtml}`,
-      footer:`<button class="btn outline" onclick="chatLeaveGroup('${convId}')">Rời nhóm</button> ${addable.length?`<button class="btn" onclick="chatAddMembers('${convId}')">Thêm</button>`:''} <button class="btn outline" onclick="closeModal()">Đóng</button>` });
+      footer:`<button class="btn outline" onclick="chatLeaveGroup('${convId}')">🚪 Rời nhóm</button> ${addable.length?`<button class="btn" onclick="chatAddMembers('${convId}')">+ Thêm</button>`:''} <button class="btn outline" onclick="closeModal()">Đóng</button>` });
+  };
+  window.chatKickMember=function(convId, uid){
+    const m=me(); const c=_convs[convId]; if(!c||!m) return;
+    if(c.createdBy!==m.id){ toast('Chỉ người tạo nhóm mới được mời thành viên ra khỏi nhóm','error'); return; }
+    if(uid===c.createdBy){ toast('Không thể mời người tạo nhóm ra khỏi nhóm','error'); return; }
+    if(!confirm('Mời '+uname(uid)+' ra khỏi nhóm?')) return;
+    _ref('conversations/'+convId+'/members/'+uid).remove();
+    _ref('userIndex/'+uid+'/'+convId).remove();
+    if(c.members) delete c.members[uid];
+    _ref('conversations/'+convId+'/messages').push({from:m.id,ts:now(),type:'text',text:uname(uid)+' đã bị mời ra khỏi nhóm bởi '+uname(m.id)});
+    if(typeof toast==='function') toast('Đã mời '+uname(uid)+' ra khỏi nhóm');
+    chatGroupInfo(convId); // làm mới danh sách
   };
   window.chatAddMembers=function(convId){
     const c=_convs[convId]; if(!c) return;
@@ -8851,14 +9202,27 @@ window.deletePayDoc = function(cid, did){
 #chLauncher{position:relative;width:58px;height:58px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(135deg,#2563eb,#1e3a8a);color:#fff;box-shadow:0 6px 20px rgba(30,58,138,.45);display:flex;align-items:center;justify-content:center;transition:transform .15s}
 #chLauncher:hover{transform:scale(1.07)}
 .ch-badge{position:absolute;top:-4px;right:-4px;min-width:20px;height:20px;padding:0 5px;border-radius:10px;background:#ef4444;color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;border:2px solid #fff}
-.ch-list-panel{position:absolute;right:0;bottom:72px;width:340px;height:520px;max-height:78vh;background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(15,23,42,.28);display:flex;flex-direction:column;overflow:hidden;border:1px solid #e2e8f0}
-.ch-win{position:fixed;width:${WIN_W}px;height:460px;max-height:80vh;background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(15,23,42,.30);display:flex;flex-direction:column;overflow:hidden;border:1px solid #e2e8f0}
-.ch-win.collapsed{height:auto!important}
+.ch-list-panel{position:fixed;right:22px;bottom:90px;width:340px;height:520px;max-height:88vh;background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(15,23,42,.28);display:flex;flex-direction:column;overflow:hidden;border:1px solid #e2e8f0;resize:both;min-width:300px;min-height:340px;max-width:96vw}
+.ch-win{position:fixed;width:${WIN_W}px;height:460px;max-height:88vh;background:#fff;border-radius:12px;box-shadow:0 12px 40px rgba(15,23,42,.30);display:flex;flex-direction:column;overflow:hidden;border:1px solid #e2e8f0;resize:both;min-width:280px;min-height:300px;max-width:96vw}
+.ch-win.collapsed{height:auto!important;resize:none}
 .ch-win.collapsed .ch-wbody{display:none}
 .ch-wbody{flex:1;display:flex;flex-direction:column;min-height:0}
+.ch-list-panel.ch-maximized,.ch-win.ch-maximized{left:2vw!important;top:2vh!important;right:auto!important;bottom:auto!important;width:96vw!important;height:96vh!important;max-width:none;max-height:none;resize:none}
+.ch-list-panel.ch-minimized{height:auto!important;resize:none}
+.ch-list-panel.ch-minimized .ch-tabs,.ch-list-panel.ch-minimized .ch-search,.ch-list-panel.ch-minimized .ch-body{display:none!important}
+.ch-tabs{display:flex;gap:4px;padding:6px 8px 0;background:#fff;border-bottom:1px solid #eef2f7;flex-shrink:0}
+.ch-tab{flex:0 0 auto;border:none;background:#f1f5f9;color:#475569;font-size:12.5px;font-weight:600;padding:7px 11px;border-radius:8px 8px 0 0;cursor:pointer;transition:background .12s}
+.ch-tab:hover{background:#e2e8f0}
+.ch-tab.active{background:#2563eb;color:#fff}
+.ch-tab-act{margin-left:auto;background:#dcfce7;color:#166534}
+.ch-tab-act:hover{background:#bbf7d0}
+.ch-rowdel{opacity:0;background:none;border:none;color:#94a3b8;cursor:pointer;font-size:15px;flex-shrink:0;padding:4px 6px;border-radius:6px;transition:opacity .12s,background .12s}
+.ch-row:hover .ch-rowdel{opacity:1}
+.ch-rowdel:hover{background:#fee2e2;color:#dc2626}
 @media(max-width:480px){.ch-list-panel{width:94vw;height:74vh}.ch-win{width:94vw}}
 .ch-head{display:flex;align-items:center;gap:8px;padding:9px 12px;background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;flex-shrink:0}
 .ch-win-head{cursor:move;user-select:none}
+.ch-list-head{cursor:move;user-select:none}
 .ch-head b{font-size:15px}
 .ch-ic{background:rgba(255,255,255,.16);border:none;color:#fff;width:28px;height:28px;border-radius:8px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .ch-ic:hover{background:rgba(255,255,255,.3)}
@@ -8915,6 +9279,14 @@ window.deletePayDoc = function(cid, did){
 .ch-send{background:#2563eb;border:none;color:#fff;width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 .ch-send:hover{background:#1d4ed8}
 .ch-ck{display:flex;align-items:center;gap:8px;font-size:13.5px;cursor:pointer;padding:3px 0}
+.ch-ckrow{display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;padding:8px 11px;border:1px solid #e8edf3;border-radius:9px;cursor:pointer;transition:background .1s,border-color .1s}
+.ch-ckrow:hover{background:#f8fafc;border-color:#cbd5e1}
+.ch-ckrow input[type=checkbox]{flex-shrink:0;width:16px;height:16px;margin:0;cursor:pointer}
+.ch-ckname{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px;font-weight:600;color:#0f172a}
+.ch-ckmeta{flex-shrink:0;margin-left:auto;font-size:11px;color:#94a3b8;text-align:right;white-space:nowrap}
+.ch-mem-row{display:flex;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid #f1f5f9}
+.ch-mem-row:last-child{border-bottom:none}
+.ch-mem-row .ch-ckname{flex:1;font-weight:600}
 .ch-popmenu{position:fixed;background:#fff;border:1px solid #e2e8f0;border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.2);z-index:99990;overflow:hidden;min-width:160px}
 .ch-popmenu div{padding:9px 14px;font-size:13px;cursor:pointer;color:#0f172a}
 .ch-popmenu div:hover{background:#f1f5f9}
