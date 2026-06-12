@@ -1033,7 +1033,23 @@ function renderPCCCKpiPanel(){
   }
   const uname=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x?(x.name||x.username||'?'):'(đã xóa)'; };
   const co=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x&&typeof getCompany==='function'?getCompany(x.companyId).code:''; };
-  const rolelb=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x&&typeof roleLabel==='function'?roleLabel(x.role):''; };
+  // [REQ12] Vai trò trong CÔNG VIỆC THIẾT KẾ của nhân viên (theo nhiệm vụ thiết kế được phân công)
+  const designRole=id=>{
+    const x=(db.users||[]).find(z=>z.id===id); if(!x) return '';
+    const pcccIds=new Set((db.contracts||[]).filter(c=>c.pcccDesign===true).map(c=>c.id));
+    // Là Chủ trì thiết kế nếu được gán Quản lý dự án (projectManagers) hoặc trùng tên Chủ trì (designerHead)
+    const isLead=(db.contracts||[]).some(c=>pcccIds.has(c.id) && (
+      (Array.isArray(c.projectManagers)&&c.projectManagers.includes(id)) ||
+      (c.designerHead && x.name && c.designerHead.trim().toLowerCase()===x.name.trim().toLowerCase())
+    ));
+    // Mảng công việc thiết kế được phân công (lấy nhãn mảng của các task thiết kế)
+    const myDesignTasks=(db.tasks||[]).filter(t=>t.assigneeId===id && t.projectId && pcccIds.has(t.projectId));
+    const hasDesignArea=myDesignTasks.some(t=>t.area==='design');
+    const jobTitle=(x.position||'').trim();
+    let role = isLead ? 'Chủ trì thiết kế' : (hasDesignArea ? 'Thiết kế viên (PCCC)' : 'Tham gia thiết kế');
+    // Ưu tiên chức danh thực tế nếu có, kèm vai trò trong dự án
+    return jobTitle ? `${jobTitle} · ${role}` : role;
+  };
   if(!rows.length){
     host.innerHTML=`<div class="card"><h3 style="margin:0 0 6px">🎯 KPI nhân viên (tự động từ tiến độ)</h3><div class="empty" style="padding:18px">Chưa có nhiệm vụ dự án nào được giao cho nhân viên để tính KPI. Hãy giao việc trong tab <b>Tiến độ &amp; Công việc</b> của từng dự án.</div></div>`;
     return;
@@ -1043,7 +1059,8 @@ function renderPCCCKpiPanel(){
     const rk=kpiRank(r.score);
     return `<tr>
       <td class="center">${i+1}</td>
-      <td><b>${escapeHtml(uname(r.empId))}</b><div class="hint muted">${escapeHtml(co(r.empId))}${rolelb(r.empId)?' · '+escapeHtml(rolelb(r.empId)):''}</div></td>
+      <td><b>${escapeHtml(uname(r.empId))}</b><div class="hint muted">${escapeHtml(co(r.empId))}</div></td>
+      <td><span class="badge" style="background:#e0e7ff;color:#3730a3">${escapeHtml(designRole(r.empId))}</span></td>
       <td class="center">${r.total}</td>
       <td class="center">${r.done}</td>
       <td class="center">${(r.compRate*100).toFixed(0)}%</td>
@@ -1063,7 +1080,7 @@ function renderPCCCKpiPanel(){
       <div class="hint muted" style="margin-bottom:8px">Công thức: <b>50%</b> Tỉ lệ hoàn thành + <b>30%</b> Tiến độ trung bình + <b>20%</b> Tỉ lệ đúng hạn − điểm phạt việc quá hạn (−3đ/việc, tối đa −15).</div>
       <div class="scroll-x"><table class="data-table" style="width:100%">
         <thead><tr>
-          <th class="center">#</th><th>Nhân viên</th><th class="center">Số việc</th><th class="center">Hoàn thành</th>
+          <th class="center">#</th><th>Nhân viên</th><th>Vai trò thiết kế</th><th class="center">Số việc</th><th class="center">Hoàn thành</th>
           <th class="center">Tỉ lệ HT</th><th class="center">Tiến độ TB</th><th class="center">Quá hạn</th>
           <th class="center">Điểm KPI</th><th class="center">Xếp loại</th>
         </tr></thead>
@@ -2437,7 +2454,7 @@ function collectAllPendingApprovals(u){
   const items = [];
   (db.contracts||[]).forEach(c=>{
     if(!canApproveProject(c.id)) return;
-    const projName = escapeHtml(c.code || c.name || '');
+    const projName = escapeHtml(c.name || c.code || '');
     // 1) Tiến độ công việc chờ xác nhận
     (db.tasks||[]).filter(t=>t.projectId===c.id && t.pendingProgress!=null).forEach(t=>{
       const emp=db.users.find(x=>x.id===t.assigneeId);
@@ -2516,6 +2533,25 @@ function collectAllPendingApprovals(u){
       }
     });
   })();
+  // [REQ2] Đề nghị GIA HẠN deadline — trình lên NGƯỜI GIAO VIỆC (createdBy) hoặc admin
+  (function(){
+    const u2 = currentUser(); if(!u2) return;
+    (db.tasks||[]).forEach(t=>{
+      if(!(t.extReq && t.extReq.status==='pending')) return;
+      // chỉ người giao việc của task này hoặc admin mới thấy & duyệt
+      if(!(u2.role==='admin' || t.createdBy===u2.id)) return;
+      const emp=db.users.find(x=>x.id===t.assigneeId);
+      const c = t.projectId ? db.contracts.find(x=>x.id===t.projectId) : null;
+      const projName = c ? escapeHtml(c.name || c.code || '') : 'Việc chung';
+      const since=t.extReq.requestedAt||now;
+      items.push({type:'ext', proj:projName, projId:t.projectId||'',
+        title:`⏰ Xin GIA HẠN: ${escapeHtml(t.title)} → ${fmtDate(t.extReq.newDue)}`,
+        sub:`👤 ${escapeHtml(emp?.name||'')} · Lý do: ${escapeHtml(t.extReq.reason||'')}`,
+        since, elapsed:now-since, overTime:(now-since)>FOUR_HRS,
+        actionConfirm:`approveExtensionRequest('${t.id}')`,
+        actionReject:`rejectExtensionRequest('${t.id}')`});
+    });
+  })();
   return items;
 }
 function renderAllPendingApprovals(u){
@@ -2532,7 +2568,8 @@ function renderAllPendingApprovals(u){
     slip:'<span class="badge" style="background:#fed7aa;color:#9a3412">Phiếu nhập</span>',
     doc:'<span class="badge" style="background:#e0e7ff;color:#3730a3">Hồ sơ KT</span>',
     rec:'<span class="badge" style="background:#fce7f3;color:#9d174d">Biên bản</span>',
-    del:'<span class="badge" style="background:#fee2e2;color:#991b1b">Xóa HS</span>'
+    del:'<span class="badge" style="background:#fee2e2;color:#991b1b">Xóa HS</span>',
+    ext:'<span class="badge" style="background:#fef9c3;color:#854d0e">Gia hạn</span>'
   }[t]||'');
   return `<div class="card" style="border-left:5px solid ${overCount?'#dc2626':'#f59e0b'};background:${overCount?'#fee2e2':'#fffbeb'}">
     <h3 style="margin:0 0 8px 0;color:${overCount?'#991b1b':'#92400e'}">📥 Nội dung chờ phê duyệt — các dự án bạn phụ trách (${all.length})${overCount?` — 🚨 <b>${overCount}</b> quá 4 giờ!`:''}</h3>
@@ -2543,7 +2580,7 @@ function renderAllPendingApprovals(u){
         const elapsedStr = hrs<1 ? `${Math.round(hrs*60)} phút` : `${hrs.toFixed(1)} giờ`;
         return `<tr ${p.overTime?'style="background:#fee2e2"':''}>
           <td>${typeBadge(p.type)}</td>
-          <td><span class="badge co">${p.proj}</span></td>
+          <td><b style="color:#1e3a8a">${p.proj}</b></td>
           <td><b>${p.title}</b></td>
           <td class="muted">${p.sub||''}</td>
           <td style="${p.overTime?'color:#dc2626;font-weight:700':''}">${elapsedStr}${p.overTime?' 🚨':''}</td>
@@ -4619,10 +4656,19 @@ function renderMyTasksTable(){
     else if(stat==='soon'){ dueStyle='color:#b45309;font-weight:600;'; dueExtra='<span class="badge kpi-dat" style="margin-left:6px;font-size:10px">SẮP HẾT HẠN</span>'; }
     if(behind) dueExtra += '<span class="badge kpi-kem" style="margin-left:6px;font-size:10px">⚠ CHẬM</span>';
     const prog = Math.max(0, Math.min(100, Number(t.progress)||0));
+    // [REQ1] Hiển thị rõ DỰ ÁN chứa công việc (tên dự án đầy đủ + số HĐ)
     const proj = t.projectId ? db.contracts.find(c=>c.id===t.projectId) : null;
     const areaLabel = proj
-      ? `<span class="badge co" title="${escapeHtml(proj.name||'')}">DA: ${escapeHtml((proj.code||proj.name||'').slice(0,28))}</span>`
-      : (t.area?`<span class="badge area-${t.area}">${getArea(t.area).name}</span>`:'—');
+      ? `<div><span class="badge co">🏗 Dự án</span> <b>${escapeHtml(proj.name||proj.code||'')}</b>${proj.code?`<div class="hint muted">Số HĐ: ${escapeHtml(proj.code)}</div>`:''}</div>`
+      : (t.area?`<span class="badge area-${t.area}">${getArea(t.area).name}</span>`:'<span class="muted">Việc chung</span>');
+    // [REQ2] Trạng thái xin gia hạn deadline
+    if(t.extReq && t.extReq.status==='pending'){
+      dueExtra += `<span class="badge kpi-dat" style="margin-left:6px;font-size:10px" title="Lý do: ${escapeHtml(t.extReq.reason||'')}">⏳ ĐANG XIN GIA HẠN → ${fmtDate(t.extReq.newDue)}</span>`;
+    } else if(t.extReq && t.extReq.status==='rejected'){
+      dueExtra += `<span class="badge kpi-kem" style="margin-left:6px;font-size:10px" title="${escapeHtml(t.extReq.decisionNote||'')}">✗ GIA HẠN BỊ TỪ CHỐI</span>`;
+    } else if(t.extReq && t.extReq.status==='approved'){
+      dueExtra += `<span class="badge kpi-xs" style="margin-left:6px;font-size:10px;background:#dcfce7;color:#166534">✓ ĐÃ GIA HẠN</span>`;
+    }
     const giver=db.users.find(x=>x.id===t.createdBy);
     const rowBg = behind && !isDoneRow ? 'background:#fff5f5;' : '';
     const rowStyle = isDoneRow ? 'text-decoration:line-through;color:#94a3b8;' : '';
@@ -4646,7 +4692,7 @@ function renderMyTasksTable(){
           <div style="width:${prog}%;height:6px;background:#1e3a8a"></div>
         </div>
       </td>
-      <td class="muted">${escapeHtml(t.note||'')}</td>
+      <td class="muted">${escapeHtml(t.note||'')}${(!isDoneRow && t.dueDate)?`<div style="margin-top:5px"><button class="btn sm outline" style="padding:2px 7px;font-size:11px" onclick="openExtensionRequest('${t.id}')" title="Đề nghị gia hạn thời gian hoàn thành">⏰ Xin gia hạn</button></div>`:''}</td>
     </tr>`;
   };
   host.innerHTML = `
@@ -4698,10 +4744,85 @@ window.saveMyTaskProgress = function(taskId){
   toast(`Đã gửi cập nhật tiến độ ${val}% — chờ cấp quản lý xác nhận`,'info');
   render();
 };
-/* Trưởng nhóm xác nhận tiến độ */
+
+/* ============================================================
+   [REQ2] GIA HẠN THỜI GIAN HOÀN THÀNH CÔNG VIỆC
+   - Nhân viên đề nghị gia hạn (ngày mới + lý do) → ghi t.extReq (pending)
+   - Đệ trình lên NGƯỜI GIAO VIỆC (t.createdBy) để phê duyệt
+   ============================================================ */
+window.openExtensionRequest = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  const curDue = t.dueDate ? new Date(t.dueDate).toISOString().slice(0,10) : '';
+  const giver = db.users.find(x=>x.id===t.createdBy);
+  const existing = (t.extReq && t.extReq.status==='pending') ? t.extReq : null;
+  openModal({
+    title:'⏰ Đề nghị gia hạn thời gian hoàn thành',
+    html:`
+      <div class="field"><b>Công việc:</b> ${escapeHtml(t.title||'')}</div>
+      <div class="field"><b>Hạn hiện tại:</b> ${t.dueDate?fmtDate(t.dueDate):'(chưa đặt)'}</div>
+      <div class="field"><b>Trình lên người giao việc:</b> ${escapeHtml(giver?.name||'(không xác định)')}</div>
+      <hr>
+      <div class="field"><label>Ngày hoàn thành mới (đề nghị) *</label>
+        <input id="ext-newdue" type="date" value="${existing?(existing.newDue?new Date(existing.newDue).toISOString().slice(0,10):''):curDue}"></div>
+      <div class="field"><label>Lý do xin gia hạn *</label>
+        <textarea id="ext-reason" rows="3" placeholder="VD: Chủ đầu tư chậm bàn giao mặt bằng, chờ vật tư về…">${existing?escapeHtml(existing.reason||''):''}</textarea></div>
+      <div class="err" id="ext-err"></div>
+    `,
+    footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
+            <button class="btn success" onclick="submitExtensionRequest('${taskId}')">📤 Gửi đề nghị</button>`
+  });
+};
+window.submitExtensionRequest = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  const nd=document.getElementById('ext-newdue').value;
+  const reason=document.getElementById('ext-reason').value.trim();
+  const err=document.getElementById('ext-err');
+  if(!nd){ err.textContent='Chọn ngày hoàn thành mới'; return; }
+  if(!reason){ err.textContent='Nhập lý do xin gia hạn'; return; }
+  const newDueTs = new Date(nd).getTime();
+  t.extReq = {
+    status:'pending',
+    newDue: newDueTs,
+    oldDue: t.dueDate || null,
+    reason: reason,
+    requestedBy: currentUser()?.id,
+    requestedAt: Date.now(),
+    approverId: t.createdBy || null
+  };
+  saveDB(db); closeModal();
+  toast('Đã gửi đề nghị gia hạn — chờ người giao việc phê duyệt','info');
+  render();
+};
+/* Người giao việc / admin DUYỆT gia hạn */
+window.approveExtensionRequest = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t||!t.extReq) return;
+  const me=currentUser();
+  if(!(me && (me.role==='admin' || t.createdBy===me.id))){ toast('Chỉ người giao việc hoặc admin được phê duyệt gia hạn','error'); return; }
+  t.dueDate = t.extReq.newDue;
+  t.extReq.status='approved';
+  t.extReq.decidedBy=me.id; t.extReq.decidedAt=Date.now();
+  saveDB(db);
+  toast('Đã DUYỆT gia hạn — hạn hoàn thành đã được cập nhật','success');
+  render();
+};
+window.rejectExtensionRequest = function(taskId){
+  const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t||!t.extReq) return;
+  const me=currentUser();
+  if(!(me && (me.role==='admin' || t.createdBy===me.id))){ toast('Chỉ người giao việc hoặc admin được phê duyệt gia hạn','error'); return; }
+  const note = prompt('Lý do từ chối gia hạn (không bắt buộc):','')||'';
+  t.extReq.status='rejected';
+  t.extReq.decisionNote=note;
+  t.extReq.decidedBy=me.id; t.extReq.decidedAt=Date.now();
+  saveDB(db);
+  toast('Đã TỪ CHỐI đề nghị gia hạn','warn');
+  render();
+};
+/* Trưởng nhóm xác nhận tiến độ — [REQ13] CHỈ người giao việc (createdBy) và admin */
 window.confirmTaskProgress = function(taskId){
   const db=getDB();
   const t = db.tasks.find(x=>x.id===taskId); if(!t) return;
+  const me=currentUser();
+  if(!(me && (me.role==='admin' || t.createdBy===me.id))){ toast('Chỉ NGƯỜI GIAO VIỆC hoặc admin được duyệt tiến độ công việc này','error'); return; }
   if(t.pendingProgress==null){ toast('Không có cập nhật chờ xác nhận','warn'); return; }
   t.progress = t.pendingProgress;
   if(t.progress>=100) t.status='done';
@@ -4717,6 +4838,8 @@ window.confirmTaskProgress = function(taskId){
 window.rejectTaskProgress = function(taskId){
   const db=getDB();
   const t = db.tasks.find(x=>x.id===taskId); if(!t) return;
+  const me=currentUser();
+  if(!(me && (me.role==='admin' || t.createdBy===me.id))){ toast('Chỉ NGƯỜI GIAO VIỆC hoặc admin được duyệt tiến độ công việc này','error'); return; }
   t.pendingProgress = null;
   saveDB(db);
   renderPopupBody?.();
@@ -5038,13 +5161,21 @@ function renderContractDashboard(host){
   // Tìm kiếm
   if(_contractFilter) list = list.filter(c=>c.id===_contractFilter);
 
-  // Sắp xếp
+  // Sắp xếp — [REQ11] hỗ trợ chế độ "Thứ tự thủ công" (kéo lên/xuống)
   const {field, dir} = _contractSort;
-  list.sort((a,b)=>{
-    const av=a[field]||0, bv=b[field]||0;
-    if(typeof av==='string') return dir==='asc'?av.localeCompare(bv):bv.localeCompare(av);
-    return dir==='asc'?(av-bv):(bv-av);
-  });
+  if(field==='manual'){
+    list.sort((a,b)=>{
+      const ao=(a.sortOrder!=null)?a.sortOrder:(a.createdAt||0);
+      const bo=(b.sortOrder!=null)?b.sortOrder:(b.createdAt||0);
+      return ao-bo;
+    });
+  } else {
+    list.sort((a,b)=>{
+      const av=a[field]||0, bv=b[field]||0;
+      if(typeof av==='string') return dir==='asc'?av.localeCompare(bv):bv.localeCompare(av);
+      return dir==='asc'?(av-bv):(bv-av);
+    });
+  }
 
   // Cảnh báo deadline (chỉ trong phạm vi đang xem: PCCC hoặc Quản lý dự án)
   const _scoped = pcccScopeContracts(db.contracts);
@@ -5074,6 +5205,9 @@ function renderContractDashboard(host){
   const _doneList   = list.filter(c=> _isDoneC(c));
   const _stab = (window._ctStatusTab==='done') ? 'done' : 'active';
   const _showList = _stab==='done' ? _doneList : _activeList;
+  // [REQ10] admin được xóa dự án · [REQ11] chế độ sắp xếp thủ công cho phép kéo lên/xuống
+  const _isAdmin = u && u.role==='admin';
+  const _isManual = _contractSort.field==='manual';
   host.innerHTML = `
     ${warnHtml}
     <div class="stat-grid">
@@ -5096,6 +5230,7 @@ function renderContractDashboard(host){
           <label style="font-size:11px">Sắp xếp theo</label>
           <div style="display:flex;gap:6px">
             <select id="ct-sort-field" onchange="ctApplySort()" style="flex:1">
+              <option value="manual" ${_contractSort.field==='manual'?'selected':''}>↕ Thứ tự thủ công (kéo lên/xuống)</option>
               <option value="signDate" ${_contractSort.field==='signDate'?'selected':''}>Ngày ký</option>
               <option value="completeDate" ${_contractSort.field==='completeDate'?'selected':''}>Ngày hoàn thành</option>
               <option value="value" ${_contractSort.field==='value'?'selected':''}>Giá trị HĐ</option>
@@ -5130,6 +5265,7 @@ function renderContractDashboard(host){
           <th>Ngày bắt đầu</th>
           <th>Ngày kết thúc</th>
           <th>Tình trạng dự án</th>
+          ${(_isAdmin || _isManual)?'<th style="white-space:nowrap">Thao tác</th>':''}
         </tr></thead>
         <tbody>${_showList.map((c,i)=>{
           const cc = contractCalc(c);
@@ -5137,6 +5273,11 @@ function renderContractDashboard(host){
           let trStyle='';
           if(stat==='overdue') trStyle='background:#fee2e2';
           else if(stat==='soon') trStyle='background:#fef3c7';
+          const actionsCell = (_isAdmin || _isManual) ? `<td onclick="event.stopPropagation()" style="white-space:nowrap">
+            ${_isManual?`<button class="btn sm outline" style="padding:2px 6px" title="Di chuyển lên" ${i===0?'disabled':''} onclick="ctMoveProject('${c.id}','up')">▲</button>
+            <button class="btn sm outline" style="padding:2px 6px" title="Di chuyển xuống" ${i===_showList.length-1?'disabled':''} onclick="ctMoveProject('${c.id}','down')">▼</button>`:''}
+            ${_isAdmin?`<button class="btn sm danger" style="padding:2px 6px" title="Xóa dự án khỏi danh mục" onclick="ctDeleteProject('${c.id}')">🗑</button>`:''}
+          </td>` : '';
           return `<tr ondblclick="openContractWindow('${c.id}')" style="cursor:pointer;${trStyle}" title="Double-click vào BẤT KỲ ô nào để mở cửa sổ chi tiết dự án (có thể thay đổi kích thước)">
             <td>${i+1}</td>
             <td><b>${escapeHtml(c.name||'')}</b></td>
@@ -5147,8 +5288,9 @@ function renderContractDashboard(host){
             <td>${fmtDate(c.signDate)}</td>
             <td>${fmtDate(c.completeDate)}${stat==='soon'?' ⚠':''}${stat==='overdue'?' 🚨':''}</td>
             <td>${completionBadge(c.completionStatus)}</td>
+            ${actionsCell}
           </tr>`;
-        }).join('') || `<tr><td colspan="9" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
+        }).join('') || `<tr><td colspan="${(_isAdmin||_isManual)?10:9}" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -5159,6 +5301,54 @@ window.ctApplySort = function(){
   renderContractTabBody();
 };
 window.ctClearFilter = function(){ _contractFilter=null; renderContractTabBody(); };
+
+/* [REQ11] Di chuyển dự án lên/xuống trên Dashboard (chế độ Thứ tự thủ công) */
+window.ctMoveProject = function(cid, dir){
+  const db=getDB();
+  const u=currentUser();
+  // Lấy danh sách hiển thị hiện tại theo đúng phạm vi & tab trạng thái
+  let list = pcccScopeContracts(db.contracts.slice());
+  if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
+  const isDone = c => c.completionStatus==='completed';
+  const showDone = (window._ctStatusTab==='done');
+  list = list.filter(c=> showDone ? isDone(c) : !isDone(c));
+  // Đảm bảo mọi dự án có sortOrder (theo thứ tự hiện tại đang xem)
+  list.sort((a,b)=>{
+    const ao=(a.sortOrder!=null)?a.sortOrder:(a.createdAt||0);
+    const bo=(b.sortOrder!=null)?b.sortOrder:(b.createdAt||0);
+    return ao-bo;
+  });
+  list.forEach((c,idx)=>{ c.sortOrder = idx; });
+  const i = list.findIndex(c=>c.id===cid);
+  if(i<0) return;
+  const j = dir==='up' ? i-1 : i+1;
+  if(j<0 || j>=list.length) return;
+  // Hoán đổi sortOrder
+  const tmp=list[i].sortOrder; list[i].sortOrder=list[j].sortOrder; list[j].sortOrder=tmp;
+  saveDB(db);
+  renderContractTabBody();
+};
+
+/* [REQ10] Admin xóa dự án khỏi danh mục (kèm dọn dẹp công việc gắn dự án) */
+window.ctDeleteProject = function(cid){
+  const u=currentUser();
+  if(!u || u.role!=='admin'){ toast('Chỉ admin được xóa dự án','error'); return; }
+  const db=getDB();
+  const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  const linkedTasks = (db.tasks||[]).filter(t=>t.projectId===cid).length;
+  const linkedSlips = (db.importSlips||[]).filter(s=>s.contractId===cid).length;
+  if(!confirm(`⚠ XÓA DỰ ÁN "${c.name||c.code}"?\n\n`+
+    `- ${linkedTasks} công việc thi công thuộc dự án sẽ bị xóa.\n`+
+    `- ${linkedSlips} phiếu nhập vật tư thuộc dự án sẽ bị xóa.\n\n`+
+    `Thao tác KHÔNG THỂ hoàn tác. Bạn chắc chắn?`)) return;
+  db.contracts = db.contracts.filter(x=>x.id!==cid);
+  db.tasks = (db.tasks||[]).filter(t=>t.projectId!==cid);
+  db.importSlips = (db.importSlips||[]).filter(s=>s.contractId!==cid);
+  if(_contractFilter===cid) _contractFilter=null;
+  saveDB(db);
+  renderContractTabBody();
+  toast('Đã xóa dự án khỏi danh mục','success');
+};
 
 /* ---------- Autocomplete tìm hợp đồng ---------- */
 let _ctSugList=[], _ctSugIdx=-1;
@@ -5342,6 +5532,7 @@ function renderPopupInfo(host, cid){
           <div><div class="muted">Trạng thái</div>${completionBadge(c.completionStatus)}</div>
           <div><div class="muted">Ngày bắt đầu</div><b>${fmtDate(c.signDate)}</b></div>
           <div><div class="muted">Ngày kết thúc</div><b>${fmtDate(c.completeDate)}</b></div>
+          <div><div class="muted">📍 Ngày bàn giao mặt bằng</div><b>${c.handoverDate?fmtDate(c.handoverDate):'<span class="muted" style="font-weight:400">(chưa cập nhật)</span>'}</b></div>
           <div><div class="muted">TT Quyết toán</div>${settlementBadge(c.settlementStatus)}</div>
         </div>
       </div>
@@ -6065,6 +6256,7 @@ window.openContractForm = function(contractId){
         </div>
         <div class="field"><label>Ngày bắt đầu (ngày ký HĐ) *</label><input id="cf-sign" type="date" value="${c?.signDate?new Date(c.signDate).toISOString().slice(0,10):''}"></div>
         <div class="field"><label>Ngày kết thúc (dự kiến) *</label><input id="cf-done" type="date" value="${c?.completeDate?new Date(c.completeDate).toISOString().slice(0,10):''}"></div>
+        <div class="field"><label>📍 Ngày bàn giao mặt bằng</label><input id="cf-handover" type="date" value="${c?.handoverDate?new Date(c.handoverDate).toISOString().slice(0,10):''}"></div>
       </div>
       <h3>2. Thông tin Chủ đầu tư & Công trình</h3>
       <div class="grid-2">
@@ -6824,6 +7016,8 @@ window.saveContractForm = function(id){
   const sd=v('cf-sign'), dd=v('cf-done');
   c.signDate = sd?new Date(sd).getTime():null;
   c.completeDate = dd?new Date(dd).getTime():null;
+  const hov=v('cf-handover');
+  c.handoverDate = hov?new Date(hov).getTime():null;
   c.value=Number(v('cf-val'))||0;
   c.payments = (window._paymentRows||[]).filter(p=>Number(p.amount)>0 || Number(p.taxVanglai)>0 || p.invoiceNo).map(p=>({
     amount: Number(p.amount)||0,
@@ -7795,15 +7989,24 @@ function renderPopupProgress(host, cid){
     }
   }
   // ----- GANTT (full title wrap + progress bar trắng→xanh + cảnh báo chậm) -----
+  // [REQ3] Mốc Gantt lấy theo NGÀY BẮT ĐẦU / KẾT THÚC của DỰ ÁN (thông tin hợp đồng)
   const dated=tasks.filter(t=>t.startDate||t.dueDate);
   let ganttHtml='<div class="muted" style="padding:10px">Chưa có công việc nào có mốc thời gian. Hãy thêm Ngày bắt đầu / Hạn hoàn thành khi giao việc.</div>';
-  if(dated.length){
+  // Có thể vẽ Gantt nếu dự án có ngày bắt đầu/kết thúc HOẶC có công việc có mốc thời gian
+  if(dated.length || c.signDate || c.completeDate){
     let min=Infinity,max=-Infinity;
     dated.forEach(t=>{ const s=t.startDate||t.dueDate, e=t.dueDate||t.startDate; if(s<min)min=s; if(e>max)max=e; });
+    // Ưu tiên khung thời gian theo dự án (ngày ký HĐ → ngày kết thúc dự kiến)
+    if(c.signDate){ min = Math.min(min, c.signDate); }
+    if(c.completeDate){ max = Math.max(max, c.completeDate); }
+    if(!isFinite(min)) min = c.signDate || Date.now();
+    if(!isFinite(max)) max = c.completeDate || (min+30*86400000);
     if(max<=min) max=min+86400000;
     const span=max-min;
     const nowPct = Math.max(0, Math.min(100, (Date.now()-min)/span*100));
-    ganttHtml=`<div style="font-size:11px;color:#64748b;margin-bottom:4px;display:flex;justify-content:space-between"><span>${fmtDate(min)} (bắt đầu)</span><span>${fmtDate(max)} (kết thúc)</span></div>`
+    const projStartPct = c.signDate ? Math.max(0, Math.min(100, (c.signDate-min)/span*100)) : null;
+    const projEndPct   = c.completeDate ? Math.max(0, Math.min(100, (c.completeDate-min)/span*100)) : null;
+    ganttHtml=`<div style="font-size:11px;color:#64748b;margin-bottom:4px;display:flex;justify-content:space-between"><span>📅 Bắt đầu dự án: <b>${fmtDate(min)}</b></span><span>🏁 Kết thúc dự án: <b>${fmtDate(max)}</b></span></div>`
       + `<div style="position:relative;margin-bottom:6px"><div style="position:absolute;left:calc(320px + ${nowPct}% * (100% - 320px) / 100);top:-4px;width:2px;height:calc(100% + 8px);background:#dc2626;z-index:2" title="Hôm nay"></div></div>`
       + dated.map(t=>{
         const s=t.startDate||t.dueDate, e=t.dueDate||t.startDate;
@@ -7821,7 +8024,7 @@ function renderPopupProgress(host, cid){
         if(hasPending){ barBorder='#f59e0b'; titleBg='#fef3c7'; }   // VÀNG: chờ xác nhận
         else if(done){ barBorder='#16a34a'; titleBg='#dcfce7'; }
         else if(behind){ barBorder='#dc2626'; titleBg='#fee2e2'; }
-        const canAppr = canApprove();
+        const canAppr = (function(){ const _me=currentUser(); return _me && (_me.role==='admin' || t.createdBy===_me.id); })(); // [REQ13] chỉ người giao việc + admin
         return `<div style="display:flex;gap:8px;margin-bottom:8px;align-items:stretch">
           <div style="width:320px;flex-shrink:0;background:${titleBg};border-radius:6px;padding:6px 8px;border:1px solid ${barBorder}">
             <div style="font-size:12px;font-weight:600;line-height:1.3;word-break:break-word;white-space:normal">${escapeHtml(t.title)}</div>
@@ -7856,7 +8059,7 @@ function renderPopupProgress(host, cid){
                   : (st==='soon'?'<span class="badge kpi-dat" style="font-size:9px">SẮP HẾT HẠN</span>':''));
         const prog = Math.max(0, Math.min(100, Number(t.progress)||0));
         const pendBg = hasPending ? 'background:#fef9c3;border-color:#f59e0b' : '';
-        const canAppr = canApprove();
+        const canAppr = (function(){ const _me=currentUser(); return _me && (_me.role==='admin' || t.createdBy===_me.id); })(); // [REQ13] chỉ người giao việc + admin
         return `<div style="background:#fff;border:1px solid #cbd5e1;${pendBg};border-radius:6px;padding:7px;margin-bottom:6px;font-size:12px">
           <b>${escapeHtml(t.title)}</b> ${warn}
           <div class="muted" style="font-size:11px;margin:3px 0">👤 ${escapeHtml(emp?.name||'—')}${t.dueDate?' · ⏰ '+fmtDate(t.dueDate):''}</div>
@@ -7886,6 +8089,10 @@ function renderPopupProgress(host, cid){
     ${alertHtml}
     ${isEmp?'':`<div style="margin-bottom:10px"><button class="btn success" onclick="openProjectTaskForm('${cid}')">+ Giao việc thi công</button></div>`}
     <h3>📊 Tiến độ tổng thể (Gantt)</h3>
+    <div class="card" style="background:#eff6ff;border-left:4px solid #2563eb;padding:8px 12px;margin-bottom:8px;font-size:13px">
+      📅 <b>Thời gian dự án:</b> ${c.signDate?fmtDate(c.signDate):'(chưa nhập ngày bắt đầu)'} → ${c.completeDate?fmtDate(c.completeDate):'(chưa nhập ngày kết thúc)'}
+      <span class="muted" style="font-size:11px">(lấy theo Ngày bắt đầu / Ngày kết thúc trong Thông tin dự án)</span>
+    </div>
     <div class="card">${ganttHtml}</div>
     <h3>🗂 Bảng công việc (Kanban)</h3>
     ${kanbanHtml}
@@ -8605,6 +8812,7 @@ window.deletePayDoc = function(cid, did){
   let _drag      = null;
   let _typingTO  = {};   // convId -> timeout
   let _lastTypingSent = {};
+  let _chReady = false;   // [REQ5] true sau khi nạp xong dữ liệu ban đầu — chỉ báo tin nhắn đến SAU đó
 
   function _ref(p){ return firebase.database().ref(ROOT + (p ? '/' + p : '')); }
   function now(){ return Date.now(); }
@@ -8670,11 +8878,17 @@ window.deletePayDoc = function(cid, did){
     _bootedUid = m.id;
     injectCSS(); initDragGlobal(); ensureLauncher();
     setupPresence(m.id); listenIndex(m.id);
+    // [REQ5] Sau ~2.5s coi như đã nạp xong dữ liệu cũ; từ đó mới báo tin nhắn MỚI
+    _chReady = false;
+    setTimeout(()=>{ _chReady = true; }, 2500);
+    // Xin quyền hiển thị thông báo hệ thống (không bắt buộc)
+    try{ if('Notification' in window && Notification.permission==='default'){ setTimeout(()=>{ try{ Notification.requestPermission(); }catch(e){} }, 3500); } }catch(e){}
   }
   function teardown(){
     _rootRefs.forEach(r=>{ try{ r.ref.off(r.ev, r.cb); }catch(e){} }); _rootRefs=[];
     for(const c in _convRefs){ _convRefs[c].forEach(r=>{ try{ r.ref.off(r.ev, r.cb); }catch(e){} }); } _convRefs={};
     _convs={}; _msgs={}; _reads={}; _typing={}; _presence={}; _wins={}; _listOpen=false;
+    _chReady=false;
     document.querySelectorAll('.ch-win').forEach(w=>w.remove());
     const w=document.getElementById('chatWidget'); if(w) w.remove();
     if(window._chHeartbeat){ clearInterval(window._chHeartbeat); window._chHeartbeat=null; }
@@ -8709,7 +8923,27 @@ window.deletePayDoc = function(cid, did){
     _convRefs[convId].push({ref:mref,ev:'value',cb:mcb});
 
     const gref=_ref('conversations/'+convId+'/messages');
-    const gcb=gref.on('value', s=>{ _msgs[convId]=s.val()||{}; if(_wins[convId]){ updateMessages(convId); markRead(convId); } scheduleRefresh(); recomputeBadge(); });
+    const gcb=gref.on('value', s=>{
+      const fresh=s.val()||{};
+      // [REQ5] Phát hiện tin nhắn MỚI đến từ người khác để cảnh báo nổi bật
+      try{
+        const m=me();
+        const prev=_msgs[convId]||{};
+        if(m && _chReady){
+          for(const id in fresh){
+            const msg=fresh[id];
+            if(!prev[id] && msg && msg.from!==m.id && !msg.recalled && (Date.now()-(msg.ts||0))<60000){
+              // chỉ báo nếu cửa sổ hội thoại này KHÔNG đang mở & hiện (đang xem thì không cần báo)
+              const winOpen=_wins[convId] && !_wins[convId].collapsed && document.getElementById('chWin_'+convId);
+              if(!winOpen) notifyNewMessage(convId, msg);
+            }
+          }
+        }
+      }catch(e){}
+      _msgs[convId]=fresh;
+      if(_wins[convId]){ updateMessages(convId); markRead(convId); }
+      scheduleRefresh(); recomputeBadge();
+    });
     _convRefs[convId].push({ref:gref,ev:'value',cb:gcb});
 
     const rref=_ref('conversations/'+convId+'/reads');
@@ -8735,6 +8969,70 @@ window.deletePayDoc = function(cid, did){
     if(nav){ nav.style.display=t>0?'inline-flex':'none'; nav.textContent=t>99?'99+':t; }
     const lb=document.getElementById('chLaunchBadge');
     if(lb){ lb.style.display=t>0?'flex':'none'; lb.textContent=t>99?'99+':t; }
+    // [REQ5] Khi còn tin chưa đọc → nút chat nhấp nháy thu hút; hết thì thôi
+    const launcher=document.getElementById('chLauncher');
+    if(launcher) launcher.classList.toggle('ch-attn', t>0);
+  }
+
+  /* [REQ5] Cảnh báo tin nhắn MỚI rõ ràng, gây chú ý:
+     - Banner trượt từ trên xuống (kèm tên người gửi + trích nội dung), bấm để mở hội thoại
+     - Phát âm thanh "ting" ngắn
+     - Nút chat nhấp nháy (xử lý ở recomputeBadge) */
+  let _lastBeep=0;
+  function playBeep(){
+    try{
+      const now2=Date.now(); if(now2-_lastBeep<1200) return; _lastBeep=now2;
+      const Ctx=window.AudioContext||window.webkitAudioContext; if(!Ctx) return;
+      if(!window._chAudioCtx) window._chAudioCtx=new Ctx();
+      const ctx=window._chAudioCtx;
+      const o=ctx.createOscillator(), g=ctx.createGain();
+      o.type='sine'; o.frequency.value=880;
+      o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.0001, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.35);
+      o.start(); o.stop(ctx.currentTime+0.36);
+    }catch(e){}
+  }
+  function msgPreview(msg){
+    if(!msg) return '';
+    if(msg.type==='image') return '🖼️ Hình ảnh';
+    if(msg.type==='file') return '📎 '+(msg.fileName||'Tệp đính kèm');
+    return (msg.text||'').slice(0,80);
+  }
+  function notifyNewMessage(convId, msg){
+    playBeep();
+    // Trình duyệt hỗ trợ Notification & người dùng đã cấp quyền → bắn cả thông báo hệ thống
+    try{
+      if('Notification' in window && Notification.permission==='granted' && document.hidden){
+        const c=_convs[convId]||{};
+        const title = c.type==='group' ? (c.name||'Tin nhắn nhóm') : uname(msg.from);
+        new Notification('💬 '+title, { body: msgPreview(msg), tag: convId });
+      }
+    }catch(e){}
+    // Banner nổi trong ứng dụng
+    const host=ensureNotifyHost();
+    const c=_convs[convId]||{};
+    const who = c.type==='group' ? (esc(c.name||'Nhóm')+' — '+esc(uname(msg.from))) : esc(uname(msg.from));
+    const card=document.createElement('div');
+    card.className='ch-notify';
+    card.innerHTML=`
+      <div class="ch-notify-ic">💬</div>
+      <div class="ch-notify-main">
+        <div class="ch-notify-title">${who}</div>
+        <div class="ch-notify-text">${esc(msgPreview(msg))}</div>
+      </div>
+      <button class="ch-notify-x" title="Đóng">✕</button>`;
+    card.querySelector('.ch-notify-x').onclick=(ev)=>{ ev.stopPropagation(); card.remove(); };
+    card.onclick=()=>{ card.remove(); if(typeof openConv==='function'){ ensureLauncher(); openConv(convId); } };
+    host.appendChild(card);
+    // tự ẩn sau 7s
+    setTimeout(()=>{ card.classList.add('ch-notify-out'); setTimeout(()=>card.remove(),350); }, 7000);
+  }
+  function ensureNotifyHost(){
+    let h=document.getElementById('chNotifyHost');
+    if(!h){ h=document.createElement('div'); h.id='chNotifyHost'; document.body.appendChild(h); }
+    return h;
   }
 
   /* ========================= LAUNCHER + PANEL DANH SÁCH ========================= */
@@ -8859,14 +9157,26 @@ window.deletePayDoc = function(cid, did){
   window.chatFilter=function(q){ fillConvList(q); fillContactList(q); };
   function fillConvList(q){
     const host=document.getElementById('chConvList'); if(!host) return; q=(q||'').toLowerCase();
-    const ids=Object.keys(_convs).sort((a,b)=>convLastTs(b)-convLastTs(a)).filter(id=>convTitle(id).toLowerCase().includes(q));
+    // [REQ7] Hội thoại có người ĐANG ONLINE ưu tiên lên trên; sau đó theo thời gian tin nhắn mới nhất
+    const convOnline=(id)=>{
+      const c=_convs[id]; if(!c) return false; const m=me(); if(!m) return false;
+      return Object.keys(c.members||{}).some(uid=>uid!==m.id && isOnline(uid));
+    };
+    const ids=Object.keys(_convs)
+      .filter(id=>convTitle(id).toLowerCase().includes(q))
+      .sort((a,b)=>{
+        const oa=convOnline(a)?0:1, ob=convOnline(b)?0:1;
+        if(oa!==ob) return oa-ob;
+        return convLastTs(b)-convLastTs(a);
+      });
     if(!ids.length){ host.innerHTML=''; return; }
     host.innerHTML=ids.map(id=>{
       const c=_convs[id]; const un=unreadCount(id);
       const av=c.type==='group'?groupAvatar(42):avatar(Object.keys(c.members||{}).find(x=>x!==me().id),42);
+      const on=convOnline(id);
       return `<div class="ch-row ${un?'unread':''}" onclick="chatOpenConv('${id}')">${av}
         <div class="ch-row-main">
-          <div class="ch-row-top"><span class="ch-name">${esc(convTitle(id))}</span><span class="ch-time">${relTime(convLastTs(id))}</span></div>
+          <div class="ch-row-top"><span class="ch-name">${esc(convTitle(id))}${on?' <span style="font-size:9px;color:#16a34a;font-weight:700">●</span>':''}</span><span class="ch-time">${relTime(convLastTs(id))}</span></div>
           <div class="ch-row-sub"><span class="ch-prev">${convLastText(id)}</span>${un?`<span class="ch-pill">${un>99?'99+':un}</span>`:''}</div>
         </div>
         <button class="ch-rowdel" title="Xóa toàn bộ cuộc trò chuyện này" onclick="event.stopPropagation();chatDeleteConv('${id}')">🗑</button></div>`;
@@ -8874,17 +9184,35 @@ window.deletePayDoc = function(cid, did){
   }
   function fillContactList(q){
     const host=document.getElementById('chContactList'); if(!host) return; q=(q||'').toLowerCase();
-    const list=contacts().filter(u=>(u.name||'').toLowerCase().includes(q)||(u.username||'').toLowerCase().includes(q));
+    let list=contacts().filter(u=>(u.name||'').toLowerCase().includes(q)||(u.username||'').toLowerCase().includes(q));
     if(!list.length){ host.innerHTML='<div class="ch-empty">Không có liên hệ.</div>'; return; }
-    host.innerHTML=list.map(u=>{
+    // [REQ7] Ưu tiên người ĐANG ONLINE lên đầu danh sách
+    list.sort((a,b)=>{
+      const oa=isOnline(a.id)?0:1, ob=isOnline(b.id)?0:1;
+      if(oa!==ob) return oa-ob;
+      return (a.name||'').localeCompare(b.name||'', 'vi');
+    });
+    const onlineCount=list.filter(u=>isOnline(u.id)).length;
+    const rowHtml=(u)=>{
       const co=(typeof getCompany==='function')?getCompany(u.companyId):null;
       const sub=(co?co.code+' · ':'')+(typeof roleLabel==='function'?roleLabel(u.role):u.role);
+      const on=isOnline(u.id);
       return `<div class="ch-row" onclick="chatStartDM('${u.id}');chatPanelTab('convs')">${avatar(u.id,42)}
         <div class="ch-row-main">
-          <div class="ch-row-top"><span class="ch-name">${esc(u.name||u.username)}</span></div>
-          <div class="ch-row-sub"><span class="ch-prev">${esc(sub)}${isOnline(u.id)?' · <span style=\"color:#16a34a\">Đang hoạt động</span>':''}</span></div>
+          <div class="ch-row-top"><span class="ch-name">${esc(u.name||u.username)}</span>${on?'<span style="font-size:10px;color:#16a34a;font-weight:700">● ONLINE</span>':''}</div>
+          <div class="ch-row-sub"><span class="ch-prev">${esc(sub)}${on?' · <span style=\"color:#16a34a\">Đang hoạt động</span>':''}</span></div>
         </div></div>`;
-    }).join('');
+    };
+    let html='';
+    if(onlineCount && !q){
+      html+=`<div class="ch-sub" style="color:#16a34a">🟢 Đang hoạt động (${onlineCount})</div>`;
+      html+=list.filter(u=>isOnline(u.id)).map(rowHtml).join('');
+      const offl=list.filter(u=>!isOnline(u.id));
+      if(offl.length){ html+=`<div class="ch-sub">Ngoại tuyến (${offl.length})</div>`; html+=offl.map(rowHtml).join(''); }
+    } else {
+      html=list.map(rowHtml).join('');
+    }
+    host.innerHTML=html;
   }
 
   /* ========================= MỞ HỘI THOẠI (NHIỀU CỬA SỔ) ========================= */
@@ -9188,10 +9516,51 @@ window.deletePayDoc = function(cid, did){
     _refreshTO=setTimeout(()=>{
       _refreshTO=null; recomputeBadge();
       if(_listOpen){ const s=document.getElementById('chSearch'); fillConvList(s?s.value:''); fillContactList(s?s.value:''); }
-      for(const convId in _wins) updateCStatus(convId);
+      // [REQ6] Cập nhật LẠI nội dung tin nhắn cho mọi cửa sổ đang mở (tránh treo, không cần F5)
+      for(const convId in _wins){
+        if(_wins[convId] && !_wins[convId].collapsed) updateMessages(convId);
+        updateCStatus(convId);
+      }
     },120);
   }
+  // Nhịp làm tươi nhẹ mỗi 30s khi đang mở danh sách/cửa sổ
   setInterval(()=>{ if(_listOpen||Object.keys(_wins).length) scheduleRefresh(); },30000);
+
+  /* [REQ6] WATCHDOG chống treo tin nhắn:
+     - Mỗi 4 giây, nếu có cửa sổ chat đang mở, đọc lại messages trực tiếp từ Firebase
+       (phòng trường hợp listener 'value' bị rớt/đọng khiến tin mới không hiện ra).
+     - So sánh số lượng/nội dung; nếu khác cache thì cập nhật cache + render lại.
+     - Cũng tự gắn lại listener nếu phát hiện listener của hội thoại đã mất. */
+  setInterval(()=>{
+    if(!_bootedUid) return;
+    const openIds=Object.keys(_wins);
+    if(!openIds.length) return;
+    openIds.forEach(convId=>{
+      // đảm bảo listener còn sống
+      if(!_convRefs[convId]) ensureConv(convId);
+      try{
+        _ref('conversations/'+convId+'/messages').get().then(snap=>{
+          const fresh=snap.val()||{};
+          const cache=_msgs[convId]||{};
+          const freshKeys=Object.keys(fresh);
+          const cacheKeys=Object.keys(cache);
+          let changed = freshKeys.length!==cacheKeys.length;
+          if(!changed){
+            // so sánh cờ recalled / nội dung text nhanh
+            for(const k of freshKeys){
+              const a=fresh[k]||{}, b=cache[k]||{};
+              if(a.text!==b.text || a.recalled!==b.recalled || a.type!==b.type){ changed=true; break; }
+            }
+          }
+          if(changed){
+            _msgs[convId]=fresh;
+            if(_wins[convId] && !_wins[convId].collapsed){ updateMessages(convId); markRead(convId); }
+            recomputeBadge();
+          }
+        }).catch(()=>{});
+      }catch(e){}
+    });
+  }, 4000);
 
   /* ========================= CSS ========================= */
   function injectCSS(){
@@ -9294,6 +9663,23 @@ window.deletePayDoc = function(cid, did){
 .ch-imgview img{max-width:92vw;max-height:82vh;border-radius:8px}
 .ch-dl{background:#fff;color:#0f172a;padding:8px 16px;border-radius:20px;text-decoration:none;font-size:14px;font-weight:600}
 #navChatBadge{background:#ef4444;color:#fff;font-size:10px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;padding:0 5px;margin-left:auto}
+/* [REQ5] Nút chat nhấp nháy khi có tin chưa đọc */
+@keyframes chAttn{0%{box-shadow:0 6px 20px rgba(239,68,68,.55),0 0 0 0 rgba(239,68,68,.55)}70%{box-shadow:0 6px 20px rgba(239,68,68,.55),0 0 0 16px rgba(239,68,68,0)}100%{box-shadow:0 6px 20px rgba(239,68,68,.55),0 0 0 0 rgba(239,68,68,0)}}
+#chLauncher.ch-attn{background:linear-gradient(135deg,#ef4444,#b91c1c)!important;animation:chAttn 1.4s infinite}
+/* [REQ5] Banner thông báo tin nhắn mới */
+#chNotifyHost{position:fixed;top:16px;right:16px;z-index:99995;display:flex;flex-direction:column;gap:10px;max-width:360px;width:calc(100vw - 32px);pointer-events:none}
+.ch-notify{pointer-events:auto;display:flex;align-items:flex-start;gap:10px;background:#fff;border-left:5px solid #2563eb;border-radius:12px;box-shadow:0 12px 34px rgba(15,23,42,.28);padding:12px 12px 12px 14px;cursor:pointer;animation:chNotifyIn .35s cubic-bezier(.2,.8,.2,1)}
+.ch-notify:hover{background:#f8fafc}
+@keyframes chNotifyIn{from{transform:translateX(120%);opacity:0}to{transform:translateX(0);opacity:1}}
+.ch-notify.ch-notify-out{animation:chNotifyOut .35s forwards}
+@keyframes chNotifyOut{from{transform:translateX(0);opacity:1}to{transform:translateX(120%);opacity:0}}
+.ch-notify-ic{flex-shrink:0;width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#1e3a8a);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px}
+.ch-notify-main{flex:1;min-width:0}
+.ch-notify-title{font-weight:700;font-size:13.5px;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ch-notify-text{font-size:12.5px;color:#475569;margin-top:2px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ch-notify-x{flex-shrink:0;background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:6px;line-height:1}
+.ch-notify-x:hover{background:#fee2e2;color:#dc2626}
+@media(max-width:480px){#chNotifyHost{top:8px;right:8px;left:8px;width:auto;max-width:none}}
 `;
     document.head.appendChild(st);
   }
