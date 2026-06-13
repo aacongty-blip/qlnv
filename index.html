@@ -862,6 +862,7 @@ function renderNav(u){
   // "Theo dõi công việc" được đưa lên ĐẦU tab bên trái cho admin/manager/employee
   if(u.role==='admin'){
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
+    items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
     items.push({k:'users', t:'Quản lý nhân sự', i:'👥'});
@@ -874,6 +875,7 @@ function renderNav(u){
   }else if(u.role==='pm'){
     // Quản lý — quyền rộng (gần như Admin, trừ Sao lưu & Cài đặt hệ thống)
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
+    items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
     items.push({k:'users', t:'Quản lý nhân sự', i:'👥'});
@@ -882,8 +884,9 @@ function renderNav(u){
     items.push({k:'reports', t:'Báo cáo & Xuất Excel', i:'📑'});
     items.push({k:'kpi-config', t:'Cấu hình KPI', i:'⚙️'});
   }else if(u.role==='manager'){
-    // Trưởng phòng — chỉ Theo dõi công việc, Quản lý dự án, Chấm công
+    // Trưởng phòng — Theo dõi công việc (giao việc), CÔNG VIỆC CỦA TÔI, Quản lý dự án, Chấm công
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
+    items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
   }else if(u.role==='employee'){
@@ -924,9 +927,9 @@ function roleLabel(r){
    employee: Nhân viên — Theo dõi công việc, Quản lý dự án (hạn chế), Chấm công,
              Thông tin cá nhân, KPI của tôi, Đổi mật khẩu */
 const ROLE_VIEWS = {
-  admin:    ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','backup','settings','change-pass','pccc-design'],
-  pm:       ['tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','change-pass','pccc-design'],
-  manager:  ['tasks','contracts','dashboard','change-pass','pccc-design'],
+  admin:    ['tasks','my-tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','backup','settings','change-pass','pccc-design'],
+  pm:       ['tasks','my-tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','change-pass','pccc-design'],
+  manager:  ['tasks','my-tasks','contracts','dashboard','change-pass','pccc-design'],
   employee: ['my-tasks','contracts','dashboard','my-info','my-kpi','change-pass','pccc-design']
 };
 function canAccessView(role, key){
@@ -973,11 +976,9 @@ function viewPCCCDesign(main, u){
       ${isEmployee?'':`<button class="tab ${_pcccSubTab==='input'?'active':''}" onclick="switchPCCCTab('input')">🏗️ Dự án</button>`}
     </div>
     <div class="help-text">💡 Mô-đun Thiết kế PCCC dùng <b>chung dữ liệu dự án và nhân sự</b> với mục Quản lý dự án. <b>Double-click</b> vào 1 dự án để mở cửa sổ chi tiết (có thể đổi kích thước) với đủ 6 tab: Tiến độ, Thông tin &amp; HĐ, Hồ sơ dự án, Vật tư, Bảo lãnh, Hồ sơ thanh toán.</div>
-    <div id="pccc-kpi-panel"></div>
     <div id="contract-body"></div>
   `;
   renderContractTabBody();
-  renderPCCCKpiPanel();
 }
 window.viewPCCCDesign=viewPCCCDesign;
 
@@ -1022,71 +1023,11 @@ function kpiRank(s){
   return {label:'Cần cải thiện', color:'#dc2626', bg:'#fee2e2'};
 }
 function renderPCCCKpiPanel(){
-  const host=document.getElementById('pccc-kpi-panel'); if(!host) return;
-  if(_pcccSubTab!=='dashboard'){ host.innerHTML=''; return; }
-  const db=getDB();
-  let rows=computePCCCKpi();
-  const u=currentUser();
-  if(u){
-    if(u.role==='manager'){ const ids=db.users.filter(x=>x.companyId===u.companyId).map(x=>x.id); rows=rows.filter(r=>ids.includes(r.empId)); }
-    else if(u.role==='employee'){ rows=rows.filter(r=>r.empId===u.id); }
-  }
-  const uname=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x?(x.name||x.username||'?'):'(đã xóa)'; };
-  const co=id=>{ const x=(db.users||[]).find(z=>z.id===id); return x&&typeof getCompany==='function'?getCompany(x.companyId).code:''; };
-  // [REQ12] Vai trò trong CÔNG VIỆC THIẾT KẾ của nhân viên (theo nhiệm vụ thiết kế được phân công)
-  const designRole=id=>{
-    const x=(db.users||[]).find(z=>z.id===id); if(!x) return '';
-    const pcccIds=new Set((db.contracts||[]).filter(c=>c.pcccDesign===true).map(c=>c.id));
-    // Là Chủ trì thiết kế nếu được gán Quản lý dự án (projectManagers) hoặc trùng tên Chủ trì (designerHead)
-    const isLead=(db.contracts||[]).some(c=>pcccIds.has(c.id) && (
-      (Array.isArray(c.projectManagers)&&c.projectManagers.includes(id)) ||
-      (c.designerHead && x.name && c.designerHead.trim().toLowerCase()===x.name.trim().toLowerCase())
-    ));
-    // Mảng công việc thiết kế được phân công (lấy nhãn mảng của các task thiết kế)
-    const myDesignTasks=(db.tasks||[]).filter(t=>t.assigneeId===id && t.projectId && pcccIds.has(t.projectId));
-    const hasDesignArea=myDesignTasks.some(t=>t.area==='design');
-    const jobTitle=(x.position||'').trim();
-    let role = isLead ? 'Chủ trì thiết kế' : (hasDesignArea ? 'Thiết kế viên (PCCC)' : 'Tham gia thiết kế');
-    // Ưu tiên chức danh thực tế nếu có, kèm vai trò trong dự án
-    return jobTitle ? `${jobTitle} · ${role}` : role;
-  };
-  if(!rows.length){
-    host.innerHTML=`<div class="card"><h3 style="margin:0 0 6px">🎯 KPI nhân viên (tự động từ tiến độ)</h3><div class="empty" style="padding:18px">Chưa có nhiệm vụ dự án nào được giao cho nhân viên để tính KPI. Hãy giao việc trong tab <b>Tiến độ &amp; Công việc</b> của từng dự án.</div></div>`;
-    return;
-  }
-  const avg=Math.round(rows.reduce((s,r)=>s+r.score,0)/rows.length);
-  const bodyRows=rows.map((r,i)=>{
-    const rk=kpiRank(r.score);
-    return `<tr>
-      <td class="center">${i+1}</td>
-      <td><b>${escapeHtml(uname(r.empId))}</b><div class="hint muted">${escapeHtml(co(r.empId))}</div></td>
-      <td><span class="badge" style="background:#e0e7ff;color:#3730a3">${escapeHtml(designRole(r.empId))}</span></td>
-      <td class="center">${r.total}</td>
-      <td class="center">${r.done}</td>
-      <td class="center">${(r.compRate*100).toFixed(0)}%</td>
-      <td class="center">${r.avgProg}%</td>
-      <td class="center" ${r.overdue?'style="color:#dc2626;font-weight:600"':''}>${r.overdue}</td>
-      <td class="center"><span style="display:inline-block;min-width:42px;font-weight:700;color:${rk.color}">${r.score}</span></td>
-      <td class="center"><span class="badge" style="background:${rk.bg};color:${rk.color}">${rk.label}</span></td>
-    </tr>`;
-  }).join('');
-  host.innerHTML=`
-    <div class="card" style="margin-bottom:14px">
-      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-        <h3 style="margin:0">🎯 KPI nhân viên — tự động tính từ tiến độ công việc</h3>
-        <span class="muted" style="font-size:12px">Điểm TB nhóm: <b style="color:#0f766e">${avg}</b>/100</span>
-        <span style="margin-left:auto;font-size:11px;color:#64748b">Cập nhật tự động khi tiến độ thay đổi</span>
-      </div>
-      <div class="hint muted" style="margin-bottom:8px">Công thức: <b>50%</b> Tỉ lệ hoàn thành + <b>30%</b> Tiến độ trung bình + <b>20%</b> Tỉ lệ đúng hạn − điểm phạt việc quá hạn (−3đ/việc, tối đa −15).</div>
-      <div class="scroll-x"><table class="data-table" style="width:100%">
-        <thead><tr>
-          <th class="center">#</th><th>Nhân viên</th><th>Vai trò thiết kế</th><th class="center">Số việc</th><th class="center">Hoàn thành</th>
-          <th class="center">Tỉ lệ HT</th><th class="center">Tiến độ TB</th><th class="center">Quá hạn</th>
-          <th class="center">Điểm KPI</th><th class="center">Xếp loại</th>
-        </tr></thead>
-        <tbody>${bodyRows}</tbody>
-      </table></div>
-    </div>`;
+  // [REQ4] Đã GỠ BỎ bảng "KPI nhân viên — tự động tính từ tiến độ công việc" khỏi
+  // cửa sổ Quản lý Thiết kế PCCC. Hàm giữ lại dạng no-op để tương thích các lời gọi cũ
+  // và dọn sạch panel nếu còn sót trong DOM.
+  const host=document.getElementById('pccc-kpi-panel');
+  if(host) host.innerHTML='';
 }
 window.renderPCCCKpiPanel=renderPCCCKpiPanel;
 window.switchPCCCTab = function(t){
@@ -1097,7 +1038,6 @@ window.switchPCCCTab = function(t){
   document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
   const ev = window.event; if(ev && ev.currentTarget) ev.currentTarget.classList.add('active');
   renderContractTabBody();
-  renderPCCCKpiPanel();
 };
 
 /* --- Hàm chung: nhập danh sách dự án PCCC (đánh dấu pcccDesign=true) --- */
@@ -2512,7 +2452,7 @@ function collectAllPendingApprovals(u){
     const u2 = currentUser(); if(!u2) return;
     if(!(u2.role==='admin' || u2.role==='pm' || u2.role==='manager')) return;
     let gtasks = (db.tasks||[]).filter(t=>!t.projectId);
-    if(u2.role==='manager'){ const ids=db.users.filter(x=>x.companyId===u2.companyId).map(x=>x.id); gtasks=gtasks.filter(t=>ids.includes(t.assigneeId)); }
+    // [REQ2] Không lọc theo công ty — công việc chung toàn hệ thống 3 công ty
     gtasks.forEach(t=>{
       const emp=db.users.find(x=>x.id===t.assigneeId);
       if(t.pendingProgress!=null){
@@ -2599,8 +2539,9 @@ function viewTasks(main, u){
   if(u.role==='employee'){ main.innerHTML='<div class="empty">Bạn không có quyền.</div>'; return; }
   const db=getDB();
   // Danh sách NV admin/manager nhìn thấy (dùng cho autocomplete)
+  // [REQ2] Coi 3 công ty là MỘT hệ thống quản lý công việc chung → trưởng phòng thấy NV cả 3 công ty
   let empPool = db.users.filter(x=>x.role!=='admin');
-  if(u.role==='manager') empPool = empPool.filter(x=>x.companyId===u.companyId);
+  // (Không lọc theo công ty — quản lý công việc chung toàn hệ thống)
 
   main.innerHTML=`
     <div class="page-head">
@@ -2644,10 +2585,7 @@ function renderTasksTable(){
   const u=currentUser();
   const filterId = window._taskFilterEmpId;
   let tasks=db.tasks.slice();
-  if(u.role==='manager'){
-    const ids = db.users.filter(x=>x.companyId===u.companyId).map(x=>x.id);
-    tasks = tasks.filter(t=>ids.includes(t.assigneeId));
-  }
+  // [REQ2] Trưởng phòng theo dõi công việc chung của cả 3 công ty (không lọc theo công ty)
   if(filterId) tasks = tasks.filter(t=>t.assigneeId===filterId);
   // Sắp xếp theo Hạn hoàn thành (sớm trước)
   tasks.sort((a,b)=>{
@@ -2799,12 +2737,11 @@ function renderHomeAlerts(u, db){
   db = db || getDB();
   let myTasks = [];
   if(u.role==='employee') myTasks = db.tasks.filter(t=>t.assigneeId===u.id);
-  else if(u.role==='manager'){ const ids=db.users.filter(x=>x.companyId===u.companyId).map(x=>x.id); myTasks=db.tasks.filter(t=>ids.includes(t.assigneeId)); }
-  else myTasks = db.tasks.slice();
+  else myTasks = db.tasks.slice(); // [REQ2] manager/pm/admin: công việc chung cả 3 công ty
   const overdue = myTasks.filter(t=>deadlineStatus(t)==='overdue');
   const due     = myTasks.filter(t=>deadlineStatus(t)==='due');
   const soon    = myTasks.filter(t=>deadlineStatus(t)==='soon');
-  let projs = db.contracts.slice(); if(u.role==='manager') projs = projs.filter(c=>c.companyId===u.companyId);
+  let projs = db.contracts.slice(); // [REQ2] dự án chung cả 3 công ty
   const pOver = projs.filter(c=>typeof contractDeadlineStatus==='function' && contractDeadlineStatus(c)==='overdue');
   const pSoon = projs.filter(c=>typeof contractDeadlineStatus==='function' && contractDeadlineStatus(c)==='soon');
   let pendCnt = 0;
@@ -2886,17 +2823,34 @@ function renderAutoKpiCard(user, period){
 }
 function renderAutoKpiSummary(emps, period){
   if(!emps || !emps.length) return '';
-  const rows = emps.map(e=>{
+  // Hiển thị TOÀN BỘ nhân viên của cả 3 công ty (kể cả NV chưa có công việc trong kỳ).
+  // Sắp xếp theo công ty rồi theo tên cho dễ quan sát.
+  const list = emps.slice().sort((a,b)=>{
+    const ca=(typeof getCompany==='function'?getCompany(a.companyId).code:'')||'';
+    const cb=(typeof getCompany==='function'?getCompany(b.companyId).code:'')||'';
+    if(ca!==cb) return ca.localeCompare(cb);
+    return (a.name||'').localeCompare(b.name||'', 'vi');
+  });
+  const rows = list.map(e=>{
     const a = autoKpiScores(e, period);
-    if(a.counts.total===0) return '';
     const f = v => v==null ? '<span class="muted">—</span>' : `<b>${v}</b>`;
-    return `<tr><td>${escapeHtml(e.name)}</td><td class="center">${f(a.commercial)}</td><td class="center">${f(a.project)}</td><td class="center">${f(a.design)}</td><td class="center">${f(a.discipline)}</td><td class="center">${a.counts.total}</td></tr>`;
-  }).filter(Boolean).join('');
+    const coCode = (typeof getCompany==='function') ? getCompany(e.companyId).code : '';
+    const noWork = a.counts.total===0;
+    return `<tr${noWork?' style="opacity:.7"':''}>
+      <td><b>${escapeHtml(e.name)}</b>${noWork?'<div class="hint muted">Chưa có công việc trong kỳ</div>':''}</td>
+      <td class="center"><span class="badge co">${escapeHtml(coCode)}</span></td>
+      <td class="center">${f(a.commercial)}</td>
+      <td class="center">${f(a.project)}</td>
+      <td class="center">${f(a.design)}</td>
+      <td class="center">${f(a.discipline)}</td>
+      <td class="center">${a.counts.total}</td>
+    </tr>`;
+  }).join('');
   if(!rows) return '';
   return `<div class="card" style="border-left:5px solid #6366f1;background:#eef2ff">
     <h3 style="margin:0 0 4px 0;color:#3730a3">🤖 KPI tự động từ công việc (tham khảo)</h3>
-    <div class="hint">Tự động tính từ mức độ hoàn thành công việc được giao (KD / DA / TK / Ý thức). Dùng tham khảo khi chấm KPI chính thức bên dưới.</div>
-    <div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Nhân viên</th><th>KD</th><th>DA</th><th>TK</th><th>Ý thức</th><th>Σ CV</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="hint">Tự động tính từ mức độ hoàn thành công việc được giao (KD / DA / TK / Ý thức) — liệt kê <b>toàn bộ nhân viên của cả 3 công ty</b>. Dùng tham khảo khi chấm KPI chính thức bên dưới.</div>
+    <div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Nhân viên</th><th class="center">Công ty</th><th>KD</th><th>DA</th><th>TK</th><th>Ý thức</th><th>Σ CV</th></tr></thead><tbody>${rows}</tbody></table></div>
   </div>`;
 }
 
@@ -2917,7 +2871,7 @@ window.openMoveTask = function(taskId){
   const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
   const u=currentUser();
   let projects=db.contracts.slice();
-  if(u.role==='manager') projects=projects.filter(c=>c.companyId===u.companyId);
+  // [REQ2] dự án chung cả 3 công ty
   const opts=projects.map(c=>`<option value="${c.id}" ${t.projectId===c.id?'selected':''}>${escapeHtml(c.name||c.code||'(chưa đặt tên)')}</option>`).join('');
   const curProj=t.projectId?db.contracts.find(c=>c.id===t.projectId):null;
   openModal({title:'↔ Chuyển công việc vào / ra dự án', html:`
@@ -2951,10 +2905,7 @@ function checkDeadlineWarning(){
   let myTasks = [];
   if(u.role==='employee'){
     myTasks = db.tasks.filter(t=>t.assigneeId===u.id);
-  } else if(u.role==='manager'){
-    const ids = db.users.filter(x=>x.companyId===u.companyId).map(x=>x.id);
-    myTasks = db.tasks.filter(t=>ids.includes(t.assigneeId));
-  } else { // admin
+  } else { // [REQ2] manager/pm/admin: cảnh báo công việc chung cả 3 công ty
     myTasks = db.tasks;
   }
   const soonTasks = myTasks.filter(t=>deadlineStatus(t)==='soon');
@@ -3169,7 +3120,7 @@ window.openTaskForm = function(id){
   const t = id ? db.tasks.find(x=>x.id===id) : null;
   const me=currentUser();
   let emps = db.users.filter(x=>x.role!=='admin');
-  if(me.role==='manager') emps=emps.filter(x=>x.companyId===me.companyId);
+  // [REQ2] Giao việc cho NV cả 3 công ty (hệ thống công việc chung)
   openModal({
     title: id?`Sửa nhiệm vụ`:'+ Giao nhiệm vụ',
     html:`
@@ -3229,7 +3180,7 @@ window.openBulkTaskForm = function(){
   const db=getDB();
   const me=currentUser();
   let emps = db.users.filter(x=>x.role!=='admin');
-  if(me.role==='manager') emps=emps.filter(x=>x.companyId===me.companyId);
+  // [REQ2] Giao việc cho NV cả 3 công ty (hệ thống công việc chung)
   if(!emps.length){ toast('Chưa có nhân sự để giao nhiệm vụ','warn'); return; }
 
   openModal({
@@ -3356,8 +3307,8 @@ window.saveBulkTasks = function(){
 function viewKPI(main, u){
   if(u.role==='employee'){ main.innerHTML='<div class="empty">Bạn không có quyền chấm KPI.</div>'; return; }
   const db=getDB();
+  // [REQ3a] Bảng KPI liệt kê toàn bộ nhân viên của cả 3 công ty
   let emps = db.users.filter(x=>x.role!=='admin');
-  if(u.role==='manager') emps=emps.filter(x=>x.companyId===u.companyId);
   const period=thisPeriod();
   main.innerHTML=`
     <div class="page-head">
@@ -3386,26 +3337,37 @@ function viewKPI(main, u){
 function renderKPIRows(){
   const period=document.getElementById('kpi-period').value||thisPeriod();
   const db=getDB(); const u=currentUser();
+  // [REQ3a] Liệt kê toàn bộ nhân viên của cả 3 công ty (không lọc theo công ty)
   let emps = db.users.filter(x=>x.role!=='admin');
-  if(u.role==='manager') emps=emps.filter(x=>x.companyId===u.companyId);
   const tbody=document.getElementById('kpi-tbody');
   if(!emps.length){ tbody.innerHTML='<tr><td colspan="9" class="empty">Chưa có nhân sự</td></tr>'; return; }
-  // Mỗi NV × mỗi mảng = 1 dòng. NV chưa gán mảng vẫn hiện 1 dòng cảnh báo.
+  // [REQ3b] Nhóm theo NHÂN VIÊN: tên + mã + công ty hiển thị 1 lần (rowspan),
+  //         mỗi mảng công việc là 1 dòng phía sau cho dễ quan sát.
   const rows=[];
+  // Sắp xếp: theo công ty rồi theo tên cho gọn
+  emps.sort((a,b)=>{
+    const ca=getCompany(a.companyId).code||'', cb=getCompany(b.companyId).code||'';
+    if(ca!==cb) return ca.localeCompare(cb);
+    return (a.name||'').localeCompare(b.name||'', 'vi');
+  });
   emps.forEach(e=>{
     const asgs = getUserAssignments(e);
+    const nameCell = `<b>${escapeHtml(e.name)}</b>`;
+    const codeCell = escapeHtml(e.code||e.username);
+    const coCell = `<span class="badge co">${getCompany(e.companyId).code}</span>`;
     if(!asgs.length){
       rows.push(`<tr>
-        <td>${escapeHtml(e.code||e.username)}</td>
-        <td><b>${escapeHtml(e.name)}</b></td>
+        <td>${codeCell}</td>
+        <td>${nameCell}</td>
         <td><span class="muted">Chưa gán mảng</span></td>
-        <td><span class="badge co">${getCompany(e.companyId).code}</span></td>
+        <td>${coCell}</td>
         <td colspan="4" class="muted">— Cần gán ít nhất 1 mảng công việc trong hồ sơ NV —</td>
         <td></td>
       </tr>`);
       return;
     }
-    asgs.forEach(asg=>{
+    const span = asgs.length;
+    asgs.forEach((asg, idx)=>{
       const ev=db.kpiEvals.find(x=>x.userId===e.id && x.period===period && x.area===asg.area);
       let pro='—',disc='—',total='—',rt='';
       if(ev){
@@ -3416,11 +3378,17 @@ function renderKPIRows(){
         rt=`<span class="badge ${f.rating.css}">${f.rating.label}</span>`;
       }
       const ar=getArea(asg.area);
-      rows.push(`<tr>
-        <td>${escapeHtml(e.code||e.username)}</td>
-        <td><b>${escapeHtml(e.name)}</b>${asgs.length>1?'<div class="hint muted">Đa nhiệm '+asgs.length+' mảng</div>':''}</td>
+      // Dòng ĐẦU của mỗi NV: in Mã NV, Họ tên, Công ty với rowspan = số mảng
+      const firstCols = (idx===0)
+        ? `<td rowspan="${span}" style="vertical-align:top">${codeCell}</td>
+           <td rowspan="${span}" style="vertical-align:top">${nameCell}${span>1?`<div class="hint muted">Đa nhiệm ${span} mảng</div>`:''}</td>`
+        : '';
+      const coColCell = (idx===0) ? `<td rowspan="${span}" style="vertical-align:top">${coCell}</td>` : '';
+      // Để cột Công ty đứng sau cột Mảng (giữ đúng thứ tự header: Mã·Tên·Mảng·Công ty)
+      rows.push(`<tr${idx===0?' style="border-top:2px solid #cbd5e1"':''}>
+        ${firstCols}
         <td>${ar?`<span class="badge area-${ar.id}">${escapeHtml(ar.name)}</span>`:'—'}</td>
-        <td><span class="badge co">${getCompany(e.companyId).code}</span></td>
+        ${coColCell}
         <td>${pro}</td>
         <td>${disc}</td>
         <td>${total}</td>
@@ -5157,7 +5125,7 @@ function renderContractDashboard(host){
   const db=getDB();
   const u=currentUser();
   let list = pcccScopeContracts(db.contracts.slice());
-  if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
+  // [REQ2] dự án chung cả 3 công ty
   // Tìm kiếm
   if(_contractFilter) list = list.filter(c=>c.id===_contractFilter);
 
@@ -5308,7 +5276,7 @@ window.ctMoveProject = function(cid, dir){
   const u=currentUser();
   // Lấy danh sách hiển thị hiện tại theo đúng phạm vi & tab trạng thái
   let list = pcccScopeContracts(db.contracts.slice());
-  if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
+  // [REQ2] dự án chung cả 3 công ty
   const isDone = c => c.completionStatus==='completed';
   const showDone = (window._ctStatusTab==='done');
   list = list.filter(c=> showDone ? isDone(c) : !isDone(c));
@@ -5358,7 +5326,7 @@ function ctFilterSuggest(q){
   const box=document.getElementById('ct-suggest'); if(!box) return;
   const db=getDB(); const u=currentUser();
   let pool = db.contracts.slice();
-  if(u.role==='manager') pool = pool.filter(c=>c.companyId===u.companyId);
+  // [REQ2] dự án chung cả 3 công ty
   const qLow=(q||'').toLowerCase().trim();
   if(qLow) pool = pool.filter(c=>
     (c.name||'').toLowerCase().includes(qLow) ||
@@ -7076,7 +7044,7 @@ window.saveContractForm = function(id){
 function renderContractInputList(host){
   const db=getDB(); const u=currentUser();
   let list = pcccScopeContracts(db.contracts.slice());
-  if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
+  // [REQ2] dự án chung cả 3 công ty
   list.sort((a,b)=>(b.signDate||0)-(a.signDate||0));
   host.innerHTML = `
     <div class="help-text">Chọn 1 HĐ để chỉnh sửa thông tin chính, link hồ sơ GDrive và phụ lục vật tư. Bấm <b>+ Thêm hợp đồng</b> ở góc trên để tạo mới.</div>
@@ -7108,7 +7076,7 @@ function renderContractInputList(host){
 function renderContractMaterialsList(host){
   const db=getDB(); const u=currentUser();
   let list = pcccScopeContracts(db.contracts.slice());
-  if(u.role==='manager') list = list.filter(c=>c.companyId===u.companyId);
+  // [REQ2] dự án chung cả 3 công ty
   list.sort((a,b)=>(b.signDate||0)-(a.signDate||0));
   host.innerHTML = `
     <div class="help-text">💡 <b>Double-click</b> vào 1 hợp đồng để mở bảng quản lý vật tư của hợp đồng đó (nhập phiếu, theo dõi tồn, cảnh báo SL/giá vượt HĐ).</div>
@@ -7726,10 +7694,7 @@ function renderContractExtras(host){
   const db=getDB();
   const u=currentUser();
   let slips = db.importSlips.slice();
-  if(u.role==='manager'){
-    const cids = db.contracts.filter(c=>c.companyId===u.companyId).map(c=>c.id);
-    slips = slips.filter(s=>cids.includes(s.contractId));
-  }
+  // [REQ2] phiếu nhập vật tư chung cả 3 công ty
   // Gom vật tư phát sinh từ tất cả phiếu nhập
   const extras = [];
   slips.forEach(s=>{
