@@ -883,6 +883,14 @@ function escapeHtml(s){
   if(s===null||s===undefined) return '';
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+/* [YC6] Làm tròn 2 chữ số thập phân (dùng cho SL còn lại trong bảng vật tư) */
+function round2(x){ return Math.round((Number(x)||0)*100)/100; }
+/* [YC4] Chuẩn hóa tiếng Việt không dấu để so khớp tên (gõ "tuan" vẫn tìm ra "Tuấn") */
+function _normVN(s){
+  return String(s||'').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/đ/g,'d').replace(/\s+/g,' ').trim();
+}
 function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
 function toast(msg, type='success'){
   const t=document.createElement('div');
@@ -936,6 +944,70 @@ function pctAchieve(target, actual, lowerIsBetter=false){
     return Math.max(0, Math.min(1.2, r));
   }
 }
+/* ============================================================
+   [YC-CT] CÁCH TÍNH % ĐẠT DO NGƯỜI DÙNG ĐỊNH NGHĨA CHO TỪNG CHỈ TIÊU
+   - Mỗi chỉ tiêu có calcType (cách tính) + steps (bảng bậc thang nếu chọn).
+   - Nếu không cấu hình → 'auto': theo ĐVT như trước (lần/vụ = càng thấp càng tốt,
+     còn lại = Thực tế/Mục tiêu, trần 120%).
+   ============================================================ */
+const KPI_CALC_TYPES = {
+  auto:        {label:'Tự động theo ĐVT (mặc định cũ)',            desc:'ĐVT "lần/vụ" → càng thấp càng tốt; còn lại: %Đạt = Thực tế ÷ Mục tiêu (trần 120%)'},
+  ratio:       {label:'Tỷ lệ: Thực tế ÷ Mục tiêu (trần 120%)',     desc:'Vượt mục tiêu được cộng tối đa 120%'},
+  ratio100:    {label:'Tỷ lệ: Thực tế ÷ Mục tiêu (trần 100%)',      desc:'Đạt/vượt mục tiêu = đúng 100%, không thưởng vượt'},
+  inverse:     {label:'Càng thấp càng tốt (≤ Mục tiêu = 100%)',     desc:'Thực tế ≤ Mục tiêu → 100%; vượt → giảm dần về 0'},
+  threshold:   {label:'Ngưỡng ĐẠT/KHÔNG ĐẠT (≥ Mục tiêu = 100%)',   desc:'Thực tế ≥ Mục tiêu → 100%, ngược lại 0%'},
+  threshold_low:{label:'Ngưỡng ĐẠT/KHÔNG ĐẠT (≤ Mục tiêu = 100%)',  desc:'Thực tế ≤ Mục tiêu → 100%, ngược lại 0% (dùng cho lỗi/vi phạm)'},
+  steps_down:  {label:'Bậc thang GIẢM (≤ ngưỡng → điểm%)',          desc:'VD "0:100, 2:80, 5:50, else:0" nghĩa là: ≤0 lần=100%, ≤2 lần=80%, ≤5 lần=50%, nhiều hơn=0%'},
+  steps_up:    {label:'Bậc thang TĂNG (≥ ngưỡng → điểm%)',          desc:'VD "10:100, 7:80, 5:50, else:0" nghĩa là: ≥10=100%, ≥7=80%, ≥5=50%, ít hơn=0%'}
+};
+/* Phân tích chuỗi bậc thang "a:b, c:d, else:x" → {steps:[{lim,pct}], elsePct} */
+function parseKpiSteps(s){
+  const steps=[]; let elsePct=0;
+  String(s||'').split(/[,\n;]+/).forEach(part=>{
+    const m=part.trim().match(/^(else|còn lại|khac|khác)\s*:\s*(-?[\d.]+)/i);
+    if(m){ elsePct=Number(m[2])||0; return; }
+    const m2=part.trim().match(/^(-?[\d.,]+)\s*:\s*(-?[\d.]+)/);
+    if(m2){ steps.push({lim:Number(m2[1].replace(',','.')), pct:Number(m2[2])||0}); }
+  });
+  return {steps, elsePct};
+}
+/* %Đạt của 1 chỉ tiêu theo cách tính người dùng định nghĩa (trả 0–1.2) */
+function pctAchieveItem(it, target, actual){
+  const t=Number(target), a=Number(actual);
+  if(actual===''||actual===null||actual===undefined||isNaN(a)) return 0;
+  const ct=(it&&it.calcType)||'auto';
+  switch(ct){
+    case 'ratio':    return (isNaN(t)||t===0) ? (a>0?1:0) : Math.max(0, Math.min(1.2, a/t));
+    case 'ratio100': return (isNaN(t)||t===0) ? (a>0?1:0) : Math.max(0, Math.min(1,   a/t));
+    case 'inverse':  return pctAchieve(target, actual, true);
+    case 'threshold':     return a>=t ? 1 : 0;
+    case 'threshold_low': return a<=t ? 1 : 0;
+    case 'steps_down': {
+      const p=parseKpiSteps(it.steps);
+      const sorted=p.steps.slice().sort((x,y)=>x.lim-y.lim);
+      for(const s of sorted){ if(a<=s.lim) return Math.max(0, s.pct/100); }
+      return Math.max(0, p.elsePct/100);
+    }
+    case 'steps_up': {
+      const p=parseKpiSteps(it.steps);
+      const sorted=p.steps.slice().sort((x,y)=>y.lim-x.lim);
+      for(const s of sorted){ if(a>=s.lim) return Math.max(0, s.pct/100); }
+      return Math.max(0, p.elsePct/100);
+    }
+    default: {
+      // [FIX] so sánh ĐVT không phân biệt hoa/thường ("Lần" = "lần")
+      const u=String((it&&it.unit)||'').toLowerCase();
+      const lower = u==='lần'||u==='vụ';
+      return pctAchieve(target, actual, lower);
+    }
+  }
+}
+/* Mô tả ngắn cách tính để hiển thị cho người chấm */
+function kpiCalcLabel(it){
+  const ct=(it&&it.calcType)||'auto';
+  const base=(KPI_CALC_TYPES[ct]||KPI_CALC_TYPES.auto).label;
+  return ct.startsWith('steps') && it.steps ? base+' — '+it.steps : base;
+}
 function computeKPISection(items, values){
   // items: template; values: {idx:{target,actual}}
   let total=0;
@@ -944,8 +1016,7 @@ function computeKPISection(items, values){
     const v=values[i]||{};
     const target = (v.target!==undefined && v.target!=='') ? v.target : it.target;
     const actual = (v.actual!==undefined && v.actual!=='') ? v.actual : '';
-    const lower = it.unit==='lần' || it.unit==='vụ';
-    const pct = pctAchieve(target, actual, lower);
+    const pct = pctAchieveItem(it, target, actual); // [YC-CT] tính theo cách người dùng định nghĩa
     const pts = it.weight * pct * 100;
     total += pts;
     detail.push({name:it.name, unit:it.unit, weight:it.weight, target, actual, pct, points:pts});
@@ -1098,6 +1169,7 @@ function renderNav(u){
     items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
+    items.push({k:'kpi-config', t:'Cấu hình KPI', i:'⚙️'}); // [YC2]
   }else if(u.role==='employee'){
     items.push({k:'my-tasks', t:'Theo dõi công việc', i:'📋'});
     items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
@@ -1138,7 +1210,7 @@ function roleLabel(r){
 const ROLE_VIEWS = {
   admin:    ['tasks','my-tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','backup','settings','change-pass','pccc-design'],
   pm:       ['tasks','my-tasks','contracts','dashboard','users','salary','kpi','reports','kpi-config','change-pass','pccc-design'],
-  manager:  ['tasks','my-tasks','contracts','dashboard','change-pass','pccc-design'],
+  manager:  ['tasks','my-tasks','contracts','dashboard','kpi-config','change-pass','pccc-design'], // [YC2] thêm kpi-config
   employee: ['my-tasks','contracts','dashboard','my-info','my-kpi','change-pass','pccc-design']
 };
 function canAccessView(role, key){
@@ -1533,10 +1605,16 @@ function renderLogin(){
 function viewDashboard(main, u){
   const db=getDB();
   const period=thisPeriod();
-  // Lọc dữ liệu hiển thị (admin xem tất, manager xem cùng công ty, employee xem mình)
-  let users = db.users.filter(x=>x.role==='employee'||x.role==='manager');
-  if(u.role==='manager') users = users.filter(x=>x.companyId===u.companyId);
+  // [YC3] Bảng chấm công hiển thị TOÀN BỘ nhân sự tổng hợp từ CẢ 3 CÔNG TY
+  //       (admin/pm/manager xem tất cả; employee chỉ xem dòng của mình)
+  let users = db.users.filter(x=>x.role!=='admin');
   if(u.role==='employee') users = users.filter(x=>x.id===u.id);
+  // Sắp xếp theo công ty rồi theo tên cho dễ theo dõi
+  users.sort((a,b)=>{
+    const ca=getCompany(a.companyId).code||'', cb=getCompany(b.companyId).code||'';
+    if(ca!==cb) return ca.localeCompare(cb);
+    return (a.name||'').localeCompare(b.name||'','vi');
+  });
 
   const rowsHtml = users.map(emp=>{
     const sal = computeSalaryMulti(emp, period);
@@ -1850,7 +1928,7 @@ function _setAttRec(db, empId, period, day, rec){
   if(!db.attendance) db.attendance={};
   if(!db.attendance[empId]) db.attendance[empId]={};
   if(!db.attendance[empId][period]) db.attendance[empId][period]={};
-  if(!rec || (!rec.code && !rec.ot && !rec.pendingCheckIn)){
+  if(!rec || (!rec.code && !rec.ot && !rec.pendingCheckIn && !rec.otReq)){
     delete db.attendance[empId][period][day];
   } else {
     db.attendance[empId][period][day] = rec;
@@ -1930,16 +2008,131 @@ function renderSelfCheckInCard(u, db){
         </div>
       </div>`;
   }
+  // [YC1] ĐĂNG KÝ TĂNG CA — NV tự điền số GIỜ tăng ca thực tế, chờ Quản lý duyệt.
+  //       KHÔNG tính tự động theo giờ về; chỉ tính giờ do NV khai và QL đã duyệt.
+  const otHtml = renderSelfOTCard(u, db, period);
   return `<div class="card" style="border-left:5px solid #16a34a">
     <h3 style="border:none;padding:0;margin-bottom:8px">🟢 Tự chấm công</h3>
     ${bodyHtml}
+  </div>
+  ${otHtml}`;
+}
+// [YC1] Card đăng ký tăng ca của NV (theo ngày, trong tháng hiện tại)
+function renderSelfOTCard(u, db, period){
+  const now = new Date();
+  const todayIso = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+  const monthRec = ((db.attendance||{})[u.id]||{})[period] || {};
+  // Liệt kê các đăng ký OT trong tháng (chờ duyệt + đã duyệt)
+  const otRows = Object.keys(monthRec).map(d=>{
+    const r = monthRec[d];
+    if(!r || typeof r!=='object') return '';
+    const dStr = String(d).padStart(2,'0')+'/'+period.split('-')[1];
+    if(r.otReq && r.otReq.status==='pending'){
+      return `<tr><td>${dStr}</td><td class="center"><b>${r.otReq.hours}h</b></td>
+        <td>${escapeHtml(r.otReq.note||'')}</td>
+        <td><span class="badge" style="background:#fef3c7;color:#92400e">⏳ Chờ duyệt</span></td>
+        <td><button class="btn sm outline" onclick="cancelOTRequest(${Number(d)})">↩ Hủy</button></td></tr>`;
+    }
+    if(Number(r.ot)>0){
+      return `<tr><td>${dStr}</td><td class="center"><b>${r.ot}h</b></td>
+        <td>${escapeHtml((r.otReq&&r.otReq.note)||'')}</td>
+        <td><span class="badge" style="background:#dcfce7;color:#166534">✓ Đã duyệt</span></td><td></td></tr>`;
+    }
+    if(r.otReq && r.otReq.status==='rejected'){
+      return `<tr><td>${dStr}</td><td class="center" style="text-decoration:line-through">${r.otReq.hours}h</td>
+        <td>${escapeHtml(r.otReq.decisionNote||'')}</td>
+        <td><span class="badge" style="background:#fee2e2;color:#991b1b">✗ Từ chối</span></td><td></td></tr>`;
+    }
+    return '';
+  }).filter(Boolean).join('');
+  return `<div class="card" style="border-left:5px solid #f59e0b">
+    <h3 style="border:none;padding:0;margin-bottom:8px">🕐 Đăng ký tăng ca (OT)</h3>
+    <div class="hint" style="margin-bottom:8px">💡 Nhập <b>số giờ tăng ca thực tế</b> bạn đã làm (không tính tự động theo giờ về). Đăng ký sẽ được gửi Quản lý duyệt — chỉ giờ <b>đã duyệt</b> mới tính vào bảng công &amp; KPI.</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div class="field" style="margin:0"><label>Ngày tăng ca</label>
+        <input type="date" id="ot-date" value="${todayIso}" max="${todayIso}" style="width:auto"></div>
+      <div class="field" style="margin:0"><label>Số giờ (h)</label>
+        <input type="number" id="ot-hours" min="0.5" max="12" step="0.5" placeholder="VD: 2" style="width:90px"></div>
+      <div class="field" style="margin:0;flex:1;min-width:160px"><label>Nội dung công việc tăng ca</label>
+        <input type="text" id="ot-note" placeholder="VD: Hoàn thiện hồ sơ thẩm duyệt dự án A"></div>
+      <button class="btn warn" onclick="submitOTRequest()">📤 Gửi đăng ký OT</button>
+    </div>
+    ${otRows?`<div class="tbl-wrap" style="margin-top:10px"><table style="font-size:12px">
+      <thead><tr><th>Ngày</th><th>Giờ OT</th><th>Nội dung</th><th>Trạng thái</th><th></th></tr></thead>
+      <tbody>${otRows}</tbody></table></div>`:''}
   </div>`;
 }
+// [YC1] NV gửi đăng ký tăng ca
+window.submitOTRequest = async function(){
+  const u = currentUser(); if(!u) return;
+  const dateStr = document.getElementById('ot-date')?.value;
+  const hours = Number(document.getElementById('ot-hours')?.value);
+  const note = (document.getElementById('ot-note')?.value||'').trim();
+  if(!dateStr){ toast('Chọn ngày tăng ca','error'); return; }
+  if(!hours || hours<=0){ toast('Nhập số giờ tăng ca (0,5 – 12h)','error'); return; }
+  if(hours>12){ toast('Số giờ tăng ca tối đa 12h/ngày','error'); return; }
+  const d = new Date(dateStr);
+  if(d.getTime() > Date.now()){ toast('Không đăng ký tăng ca cho ngày tương lai','error'); return; }
+  const period = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  const day = d.getDate();
+  const db = getDB();
+  const rec = _getAttRec(db, u.id, period, day) || {};
+  if(rec.otReq && rec.otReq.status==='pending'){ toast('Ngày này đã có đăng ký OT đang chờ duyệt','warn'); return; }
+  if(Number(rec.ot)>0){ toast('Ngày này đã có giờ OT được duyệt ('+rec.ot+'h). Liên hệ Quản lý nếu cần sửa.','warn'); return; }
+  rec.otReq = { status:'pending', hours, note, requestedBy:u.id, requestedAt:Date.now() };
+  _setAttRec(db, u.id, period, day, rec);
+  await saveDB(db);
+  toast('Đã gửi đăng ký tăng ca '+hours+'h — chờ Quản lý duyệt');
+  render();
+};
+// [YC1] NV hủy đăng ký OT còn chờ duyệt (của tháng hiện tại)
+window.cancelOTRequest = async function(day){
+  const u = currentUser(); if(!u) return;
+  const now = new Date();
+  const period = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const db = getDB();
+  const rec = _getAttRec(db, u.id, period, day);
+  if(!rec || !rec.otReq || rec.otReq.status!=='pending'){ toast('Không có đăng ký OT chờ duyệt','warn'); return; }
+  delete rec.otReq;
+  _setAttRec(db, u.id, period, day, rec);
+  await saveDB(db);
+  toast('Đã hủy đăng ký tăng ca','info');
+  render();
+};
+// [YC1] Quản lý duyệt / từ chối đăng ký OT
+window.confirmOTRequest = async function(empId, period, day){
+  if(!canApprove()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const db = getDB();
+  const rec = _getAttRec(db, empId, period, day);
+  if(!rec || !rec.otReq || rec.otReq.status!=='pending'){ toast('Không có đăng ký OT chờ duyệt','warn'); return; }
+  rec.ot = Number(rec.otReq.hours)||0;
+  rec.otReq.status='approved';
+  rec.otReq.decidedBy=currentUser().id; rec.otReq.decidedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã duyệt tăng ca '+rec.ot+'h');
+  render();
+};
+window.rejectOTRequest = async function(empId, period, day){
+  if(!canApprove()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const note = prompt('Lý do từ chối tăng ca (sẽ hiển thị cho NV):','')||'';
+  const db = getDB();
+  const rec = _getAttRec(db, empId, period, day);
+  if(!rec || !rec.otReq || rec.otReq.status!=='pending'){ toast('Không có đăng ký OT chờ duyệt','warn'); return; }
+  rec.otReq.status='rejected';
+  rec.otReq.decisionNote=note;
+  rec.otReq.decidedBy=currentUser().id; rec.otReq.decidedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã từ chối đăng ký tăng ca','warn');
+  render();
+};
 // Danh sách chấm công chờ duyệt (cho admin/PM/manager)
 function renderAttendancePendingList(u, db){
+  // [YC3] Hiển thị yêu cầu chờ duyệt của NHÂN VIÊN CẢ 3 CÔNG TY (bỏ lọc theo công ty)
   let users = db.users.filter(x=>x.role!=='admin');
-  if(u.role==='manager') users = users.filter(x=>x.companyId===u.companyId);
   const pending = [];
+  const pendingOT = []; // [YC1] đăng ký tăng ca chờ duyệt
   users.forEach(emp=>{
     const empRec = db.attendance[emp.id]||{};
     Object.keys(empRec).forEach(period=>{
@@ -1949,9 +2142,40 @@ function renderAttendancePendingList(u, db){
         if(r && typeof r==='object' && r.pendingCheckIn){
           pending.push({emp, period, day:Number(day), rec:r});
         }
+        if(r && typeof r==='object' && r.otReq && r.otReq.status==='pending'){
+          pendingOT.push({emp, period, day:Number(day), rec:r});
+        }
       });
     });
   });
+  // [YC1] Card duyệt tăng ca
+  let otCard='';
+  if(pendingOT.length){
+    pendingOT.sort((a,b)=>(b.rec.otReq.requestedAt||0)-(a.rec.otReq.requestedAt||0));
+    const otRows = pendingOT.map(p=>{
+      const dStr = `${String(p.day).padStart(2,'0')}/${p.period.split('-')[1]}/${p.period.split('-')[0]}`;
+      return `<tr>
+        <td><b>${escapeHtml(p.emp.name)}</b><div class="hint muted">${escapeHtml(p.emp.code||p.emp.username)}</div></td>
+        <td><span class="badge co">${getCompany(p.emp.companyId).code}</span></td>
+        <td>${escapeHtml(dStr)}</td>
+        <td class="center"><b style="color:#b45309">${p.rec.otReq.hours}h</b></td>
+        <td class="muted">${escapeHtml(p.rec.otReq.note||'')}</td>
+        <td>
+          <button class="btn sm success" onclick="confirmOTRequest('${p.emp.id}','${p.period}',${p.day})">✓ Duyệt</button>
+          <button class="btn sm danger" onclick="rejectOTRequest('${p.emp.id}','${p.period}',${p.day})">✗ Từ chối</button>
+        </td>
+      </tr>`;
+    }).join('');
+    otCard = `<div class="card" style="border-left:5px solid #f59e0b">
+      <h3 style="border:none;padding:0;margin-bottom:8px">🕐 Đăng ký TĂNG CA chờ duyệt <span class="badge" style="background:#fef3c7;color:#92400e">${pendingOT.length}</span></h3>
+      <div class="hint" style="margin-bottom:8px">💡 NV tự khai số giờ tăng ca thực tế. Chỉ giờ <b>đã duyệt</b> mới tính vào bảng công, lương và KPI.</div>
+      <div class="tbl-wrap"><table style="font-size:13px">
+        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ OT</th><th>Nội dung</th><th></th></tr></thead>
+        <tbody>${otRows}</tbody>
+      </table></div>
+    </div>`;
+  }
+  if(!pending.length && otCard) return otCard;
   if(!pending.length){
     return `<div class="card" style="border-left:5px solid #94a3b8">
       <h3 style="border:none;padding:0">📋 Chấm công chờ duyệt <span class="badge" style="background:#dcfce7;color:#166534">0</span></h3>
@@ -1985,7 +2209,7 @@ function renderAttendancePendingList(u, db){
       <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ vào</th><th>Đánh giá</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-  </div>`;
+  </div>` + otCard;
 }
 // NV tự chấm công hôm nay
 window.selfCheckIn = async function(){
@@ -2007,6 +2231,7 @@ window.selfCheckIn = async function(){
   const newRec = {
     code: 'P',
     ot: (existing && existing.ot) || 0,
+    otReq: (existing && existing.otReq) || undefined, // [YC1] giữ đăng ký OT nếu có
     checkIn: ts,
     late: isLate,
     lateMins,
@@ -2033,7 +2258,9 @@ window.cancelSelfCheckIn = async function(){
   const day = now.getDate();
   const rec = _getAttRec(db, u.id, period, day);
   if(!rec || !rec.pendingCheckIn){ toast('Đã được xác nhận, không hủy được','error'); return; }
-  _setAttRec(db, u.id, period, day, null);
+  // [YC1] Giữ lại đăng ký tăng ca (nếu có) khi hủy chấm công
+  const keepOT = rec.otReq ? {otReq: rec.otReq, ot: Number(rec.ot)||0} : null;
+  _setAttRec(db, u.id, period, day, keepOT);
   await saveDB(db);
   toast('Đã hủy bỏ chấm công','info');
   render();
@@ -2060,8 +2287,9 @@ window.rejectCheckIn = async function(empId, period, day){
   const db = getDB();
   const rec = _getAttRec(db, empId, period, day);
   if(!rec || !rec.pendingCheckIn){ toast('Không có yêu cầu chờ duyệt','warn'); return; }
-  // Xóa bản ghi — NV sẽ chấm lại
-  _setAttRec(db, empId, period, day, null);
+  // Xóa bản ghi — NV sẽ chấm lại. [YC1] Giữ lại đăng ký tăng ca nếu có
+  const keepOT2 = rec.otReq ? {otReq: rec.otReq, ot: Number(rec.ot)||0} : null;
+  _setAttRec(db, empId, period, day, keepOT2);
   // Lưu lý do vào lịch sử nếu cần (đơn giản: bỏ qua, chỉ toast)
   await saveDB(db);
   toast('Đã từ chối — yêu cầu NV chấm công lại','warn');
@@ -3063,8 +3291,394 @@ function renderAutoKpiSummary(emps, period){
   </div>`;
 }
 
+/* ============================================================
+   [YC-QL] KPI TRƯỞNG PHÒNG / QUẢN LÝ — TRÁCH NHIỆM LIÊN ĐỚI
+   ------------------------------------------------------------
+   Nguyên tắc: lỗi của nhân viên trong các dự án/công việc mà người
+   quản lý phụ trách (quá hạn, hoàn thành trễ) được tính là lỗi
+   GIÁM SÁT của chính người quản lý đó (buông lỏng quản lý).
+   Phạm vi trách nhiệm của 1 quản lý/trưởng phòng gồm:
+   - Công việc thuộc DỰ ÁN mà họ được gán làm Quản lý dự án (projectManagers)
+   - Công việc do chính họ GIAO cho nhân viên khác (createdBy)
+   Công thức: Điểm = 60×(tỷ lệ hoàn thành) + 40×(tỷ lệ đúng hạn) − 3đ/lỗi quá hạn − 1đ/lỗi trễ (chặn 0–100)
+   ============================================================ */
+function computeLeaderKpi(leader, period){
+  const db=getDB();
+  const p = period||thisPeriod();
+  const parts=p.split('-').map(Number);
+  const yy=parts[0], mm=parts[1];
+  const mStart=new Date(yy,mm-1,1).getTime();
+  const mEnd  =new Date(yy,mm,0,23,59,59).getTime();
+  const now=Date.now();
+  // Dự án leader phụ trách
+  const projIds = new Set((db.contracts||[]).filter(c=>Array.isArray(c.projectManagers)&&c.projectManagers.includes(leader.id)).map(c=>c.id));
+  const inScope = t=>{
+    if(t.assigneeId===leader.id) return false; // việc của chính leader không tính vào trách nhiệm giám sát
+    return (t.projectId && projIds.has(t.projectId)) || t.createdBy===leader.id;
+  };
+  let total=0, done=0, onTime=0, overdue=0, lateDone=0;
+  const errList=[];
+  (db.tasks||[]).forEach(t=>{
+    if(!inScope(t)) return;
+    const due=t.dueDate||0, fin=t.confirmedAt||t.completedAt||0;
+    const inPeriod=(due>=mStart&&due<=mEnd)||(fin>=mStart&&fin<=mEnd)||(due&&due<=mEnd&&t.status!=='done');
+    if(!inPeriod) return;
+    total++;
+    if(t.status==='done'){
+      done++;
+      const ot=!t.dueDate || ((t.confirmedAt||t.completedAt||t.dueDate) <= (t.dueDate+86400000));
+      if(ot) onTime++; else { lateDone++; errList.push({t, type:'Hoàn thành TRỄ hạn'}); }
+    } else if(t.dueDate && t.dueDate<now){ overdue++; errList.push({t, type:'QUÁ HẠN chưa xong'}); }
+  });
+  let score=null;
+  if(total>0){
+    const compRate=done/total, onTimeRate=onTime/total;
+    score = 60*compRate + 40*onTimeRate;
+    score -= overdue*3 + lateDone*1; // [YC-QL] trừ điểm trách nhiệm giám sát
+    score = Math.max(0, Math.min(100, Math.round(score)));
+  }
+  return {total, done, onTime, overdue, lateDone, errCount:overdue+lateDone, score,
+          projCount:projIds.size, errList,
+          rating: score!=null ? ratingOf(score) : null};
+}
+function renderLeaderKpiPanel(period){
+  const db=getDB();
+  const leaders=db.users.filter(x=>x.role==='pm'||x.role==='manager');
+  if(!leaders.length) return '';
+  const rows=leaders.map(L=>{
+    const k=computeLeaderKpi(L, period);
+    const co=getCompany(L.companyId);
+    const scoreH = k.score==null ? '<span class="muted">— chưa có CV trong phạm vi —</span>'
+      : `<b style="font-size:15px">${k.score}</b> <span class="badge ${k.rating.css}">${k.rating.label}</span>`;
+    const errH = k.errCount
+      ? `<span class="badge" style="background:#fee2e2;color:#991b1b" title="${k.errList.slice(0,6).map(e=>e.type+': '+(e.t.title||'')).join(' · ')}">⚠ ${k.errCount} lỗi (${k.overdue} quá hạn · ${k.lateDone} trễ)</span>`
+      : '<span class="badge" style="background:#dcfce7;color:#166534">✓ 0 lỗi</span>';
+    return `<tr>
+      <td><b>${escapeHtml(L.name)}</b><div class="hint muted">${escapeHtml(L.code||L.username)}</div></td>
+      <td>${roleBadge(L.role)}</td>
+      <td class="center"><span class="badge co">${escapeHtml(co.code)}</span></td>
+      <td class="center">${k.projCount}</td>
+      <td class="center">${k.total}</td>
+      <td class="center">${k.done}<span class="muted">/${k.total}</span></td>
+      <td class="center">${k.onTime}</td>
+      <td>${errH}</td>
+      <td>${scoreH}</td>
+      <td><button class="btn sm success" onclick="openKPIForm('${L.id}','${period}')">Chấm KPI</button></td>
+    </tr>`;
+  }).join('');
+  return `<div class="card" style="border-left:5px solid #9d174d;background:#fdf2f8">
+    <h3 style="margin:0 0 4px 0;color:#9d174d">👔 KPI Quản lý &amp; Trưởng phòng — trách nhiệm giám sát · ${fmtPeriod(period)}</h3>
+    <div class="hint" style="margin-bottom:8px">Lỗi của nhân viên (quá hạn, hoàn thành trễ) trong <b>dự án họ quản lý</b> hoặc <b>công việc họ giao</b> được tính là lỗi <b>buông lỏng quản lý, giám sát</b> của chính quản lý đó.
+    Công thức: Điểm = 60×(% hoàn thành) + 40×(% đúng hạn) − <b>3đ/việc quá hạn</b> − <b>1đ/việc trễ</b>. Dùng cột này làm căn cứ khi chấm KPI chính thức cho quản lý (nút "Chấm KPI").</div>
+    <div class="tbl-wrap"><table style="font-size:12px">
+      <thead><tr><th>Quản lý / Trưởng phòng</th><th>Vai trò</th><th>Cty</th><th>DA phụ trách</th><th>Σ CV đội</th><th>Hoàn thành</th><th>Đúng hạn</th><th>Lỗi giám sát</th><th>Điểm trách nhiệm</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </div>`;
+}
+
+/* ============================================================
+   [YC-NAM] KPI CẢ NĂM — trung bình 12 tháng theo từng NV · từng mảng
+   ============================================================ */
+window.openYearKpiModal = function(){
+  const y = new Date().getFullYear();
+  openModal({
+    title:'📅 KPI CẢ NĂM — tổng hợp theo nhân viên', size:'lg',
+    html:`
+      <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:10px">
+        <div class="field" style="margin:0"><label>Năm</label>
+          <input type="number" id="ykpi-year" value="${y}" min="2020" max="2100" style="width:110px" onchange="renderYearKpiTable()"></div>
+        <div class="hint" style="flex:1">Điểm năm = <b>trung bình cộng TỔNG KPI các tháng đã chấm</b> trong năm (theo từng mảng). Xếp loại năm dùng chung bảng quy đổi tháng. Ô trống = tháng chưa chấm.</div>
+      </div>
+      <div id="ykpi-body"></div>
+    `,
+    footer:`<button class="btn outline" onclick="closeModal()">Đóng</button>`,
+    onShown:()=>renderYearKpiTable()
+  });
+};
+window.renderYearKpiTable = function(){
+  const host=document.getElementById('ykpi-body'); if(!host) return;
+  const y=Number(document.getElementById('ykpi-year')?.value)||new Date().getFullYear();
+  const db=getDB();
+  const emps=db.users.filter(x=>x.role!=='admin').sort((a,b)=>{
+    const ca=getCompany(a.companyId).code||'', cb=getCompany(b.companyId).code||'';
+    if(ca!==cb) return ca.localeCompare(cb);
+    return (a.name||'').localeCompare(b.name||'','vi');
+  });
+  const monthTh=Array.from({length:12},(_,i)=>`<th class="center" style="min-width:36px">T${i+1}</th>`).join('');
+  const rows=[];
+  emps.forEach(e=>{
+    getUserAssignments(e).forEach(asg=>{
+      const ar=getArea(asg.area);
+      let sum=0, cnt=0;
+      const cells=Array.from({length:12},(_,i)=>{
+        const p=y+'-'+String(i+1).padStart(2,'0');
+        const ev=db.kpiEvals.find(x=>x.userId===e.id && x.period===p && x.area===asg.area);
+        if(!ev) return '<td class="center muted">—</td>';
+        const f=computeFullKPI(ev);
+        sum+=f.total; cnt++;
+        return `<td class="center" title="${f.rating.label}"><b>${f.total.toFixed(0)}</b></td>`;
+      }).join('');
+      const avg=cnt?sum/cnt:null;
+      const rt=avg!=null?ratingOf(avg):null;
+      rows.push(`<tr>
+        <td><b>${escapeHtml(e.name)}</b><div class="hint muted">${escapeHtml(e.code||e.username)} · <span class="badge co">${getCompany(e.companyId).code}</span></div></td>
+        <td>${ar?`<span class="badge area-${ar.id}">${escapeHtml(ar.short)}</span>`:'—'}</td>
+        ${cells}
+        <td class="center">${cnt}/12</td>
+        <td class="center">${avg!=null?`<b style="font-size:14px">${avg.toFixed(1)}</b>`:'<span class="muted">—</span>'}</td>
+        <td>${rt?`<span class="badge ${rt.css}">${rt.label}</span>`:'<span class="muted">Chưa chấm</span>'}</td>
+      </tr>`);
+    });
+  });
+  host.innerHTML=`<div class="tbl-wrap"><table style="font-size:11.5px">
+    <thead><tr><th>Nhân viên</th><th>Mảng</th>${monthTh}<th>Số tháng</th><th>TB NĂM</th><th>Xếp loại năm</th></tr></thead>
+    <tbody>${rows.join('')||'<tr><td colspan="17" class="empty">Chưa có dữ liệu KPI trong năm '+y+'</td></tr>'}</tbody>
+  </table></div>
+  <div class="hint" style="margin-top:8px">💡 Có thể xuất chi tiết từng tháng bằng nút <b>Xuất Excel</b> ở mục "Báo cáo &amp; Xuất Excel" (chọn loại "Tổng hợp KPI năm").</div>`;
+};
+
+/* ============================================================
+   [MỚI] LIÊN KẾT KPI TỰ ĐỘNG ↔ CÔNG VIỆC / CHẤM CÔNG
+   ------------------------------------------------------------
+   Cơ chế "Áp dụng vào KPI chính thức":
+   - Phần mềm tự tính giá trị "Thực tế" cho các chỉ tiêu ĐO ĐƯỢC
+     từ dữ liệu công việc (task) và chấm công, rồi ghi vào bản đánh
+     giá KPI chính thức (kpiEvals). Các chỉ tiêu định tính (chất lượng,
+     thái độ, doanh thu...) vẫn để trống cho quản lý nhập tay.
+   - Mỗi chỉ tiêu tự động được đánh dấu {auto:true, autoKey} để hiển
+     thị badge 🤖 và để quản lý biết đâu là số máy chấm.
+   ============================================================ */
+
+/* Bộ khóa nguồn dữ liệu tự động (autoKey) và nhãn hiển thị */
+const AUTO_KPI_SOURCES = {
+  ontime_rate:        {label:'% công việc hoàn thành ĐÚNG HẠN', scope:'area'},
+  completion_rate:    {label:'% công việc HOÀN THÀNH',          scope:'area'},
+  done_count:         {label:'SỐ công việc/hồ sơ hoàn thành',    scope:'area'},
+  report_ontime_rate: {label:'% báo cáo/công việc nộp đúng hạn', scope:'disc'},
+  late_count:         {label:'SỐ lần đi làm muộn (chấm công)',   scope:'disc'},
+  ot_hours:           {label:'Giờ tăng ca thực tế (chấm công)',  scope:'disc'},
+  item_tasks:         {label:'Các công việc GẮN ĐÚNG HẠNG MỤC này', scope:'area'} // [YC-HM]
+};
+/* [YC-HM] Danh sách công việc của 1 NV thuộc 1 mảng trong 1 kỳ (dùng chung) */
+function _tasksOfUserAreaPeriod(user, period, area){
+  const db=getDB();
+  const parts=(period||thisPeriod()).split('-').map(Number);
+  const yy=parts[0], mm=parts[1];
+  const mStart=new Date(yy,mm-1,1).getTime();
+  const mEnd  =new Date(yy,mm,0,23,59,59).getTime();
+  const areaKey=t=> t.area ? t.area : (t.projectId ? 'project' : null);
+  return (db.tasks||[]).filter(t=>{
+    if(t.assigneeId!==user.id) return false;
+    if(areaKey(t)!==area) return false;
+    const due=t.dueDate||0, fin=t.confirmedAt||t.completedAt||0;
+    return (due>=mStart&&due<=mEnd)||(fin>=mStart&&fin<=mEnd)||(due&&due<=mEnd&&t.status!=='done');
+  });
+}
+/* [YC-HM] Tính "Thực tế" cho 1 chỉ tiêu từ các việc GẮN ĐÚNG hạng mục đó.
+   - Chỉ tiêu dạng LỖI (lần/vụ hoặc cách tính "càng thấp càng tốt"): đếm việc quá hạn/trễ.
+   - Chỉ tiêu dạng %: tỷ lệ hoàn thành đúng hạn của các việc gắn hạng mục.
+   - Chỉ tiêu dạng SỐ LƯỢNG (bộ, SL, việc, HĐ...): đếm việc đã hoàn thành. */
+function computeItemActualFromTasks(it, linkedTasks){
+  const now=Date.now();
+  let total=0, done=0, onTime=0, errs=0;
+  linkedTasks.forEach(t=>{
+    total++;
+    if(t.status==='done'){
+      done++;
+      const ot=!t.dueDate || ((t.confirmedAt||t.completedAt||t.dueDate) <= (t.dueDate+86400000));
+      if(ot) onTime++; else errs++;
+    } else if(t.dueDate && t.dueDate<now){ errs++; }
+  });
+  if(!total) return null;
+  const ct=it.calcType||'auto';
+  const u=String(it.unit||'').toLowerCase(); // [FIX] không phân biệt hoa/thường
+  const lowerLike = u==='lần'||u==='vụ'||ct==='inverse'||ct==='threshold_low'||ct==='steps_down';
+  if(lowerLike) return errs;                       // số lỗi (quá hạn/trễ)
+  if(u==='%') return Math.round(onTime/total*100); // % đúng hạn
+  return done;                                     // số lượng hoàn thành
+}
+
+/* Xác định autoKey của 1 chỉ tiêu:
+   ưu tiên item.autoKey do Admin đặt (chuỗi '' = tắt tự động),
+   nếu chưa đặt thì suy ra theo tên/đơn vị chỉ tiêu. */
+function resolveAutoKey(area, item){
+  if(item && item.autoKey!==undefined && item.autoKey!==null) return item.autoKey;
+  const n=((item&&item.name)||'').toLowerCase();
+  if(/báo cáo/.test(n))                                  return 'report_ontime_rate';
+  if(/đi làm|đi trễ|đi muộn|đúng giờ/.test(n))           return 'late_count';
+  if(/tăng ca/.test(n))                                  return 'ot_hours';
+  if(/đúng tiến độ|hoàn thành.*tiến độ|đúng hạn/.test(n))return 'ontime_rate';
+  if(/khối lượng/.test(n))                               return 'done_count';
+  return ''; // '' = chấm tay
+}
+
+/* Gom thống kê công việc theo 1 MẢNG cho 1 NV trong 1 kỳ (tháng) */
+function autoAreaTaskStats(user, period){
+  return function(area){
+    const db=getDB();
+    const parts=(period||thisPeriod()).split('-').map(Number);
+    const yy=parts[0], mm=parts[1];
+    const mStart=new Date(yy,mm-1,1).getTime();
+    const mEnd  =new Date(yy,mm,0,23,59,59).getTime();
+    const areaKey=t=> t.area ? t.area : (t.projectId ? 'project' : null);
+    const now=Date.now();
+    let total=0, done=0, onTime=0, overdue=0;
+    (db.tasks||[]).forEach(t=>{
+      if(t.assigneeId!==user.id) return;
+      if(areaKey(t)!==area) return;
+      const due=t.dueDate||0, fin=t.confirmedAt||t.completedAt||0;
+      const inPeriod=(due>=mStart&&due<=mEnd)||(fin>=mStart&&fin<=mEnd)||(due&&due<=mEnd&&t.status!=='done');
+      if(!inPeriod) return;
+      total++;
+      if(t.status==='done'){
+        done++;
+        const ot = !t.dueDate || ((t.confirmedAt||t.completedAt||t.dueDate) <= (t.dueDate+86400000));
+        if(ot) onTime++;
+      } else if(t.dueDate && t.dueDate<now){ overdue++; }
+    });
+    return {
+      total, done, onTime, overdue,
+      onTimeRate:  total? Math.round(onTime/total*100):null,
+      completionRate: total? Math.round(done/total*100):null,
+      doneCount: total? done : null
+    };
+  };
+}
+
+/* Thống kê Ý THỨC (dùng chung mọi mảng): đi muộn, tăng ca (chấm công) + báo cáo đúng hạn (task) */
+function autoDisciplineStats(user, period){
+  const db=getDB();
+  const p=period||thisPeriod();
+  const rec=((db.attendance||{})[user.id]||{})[p]||{};
+  let lateCount=0, otHours=0, hasAttendance=false;
+  Object.values(rec).forEach(v=>{
+    if(v==null) return;
+    hasAttendance=true;
+    if(typeof v==='object'){
+      if(v.late===true) lateCount++;
+      otHours += Number(v.ot)||0;
+    }
+  });
+  const rep = autoKpiScores(user, p).discipline; // % task đúng hạn trên toàn bộ việc được giao
+  return {
+    lateCount, otHours, hasAttendance,
+    reportRate: rep
+  };
+}
+
+/* Tính giá trị "Thực tế" cho 1 chỉ tiêu theo autoKey. Trả null nếu không đủ dữ liệu. */
+function computeAutoActual(autoKey, areaStats, discStats){
+  switch(autoKey){
+    case 'ontime_rate':        return areaStats ? areaStats.onTimeRate : null;
+    case 'completion_rate':    return areaStats ? areaStats.completionRate : null;
+    case 'done_count':         return areaStats ? areaStats.doneCount : null;
+    case 'report_ontime_rate': return discStats ? discStats.reportRate : null;
+    case 'late_count':         return discStats && discStats.hasAttendance ? discStats.lateCount : null;
+    case 'ot_hours':           return discStats && discStats.hasAttendance ? discStats.otHours : null;
+    default: return null;
+  }
+}
+
+/* Dựng "bản vá" tự động cho 1 NV · 1 kỳ · 1 mảng: {pro:{i:{...}}, disc:{i:{...}}, filled} */
+function buildAutoEvalPatch(user, period, area){
+  const db=getDB();
+  const proItems = db.kpiTemplates[area]||[];
+  const discItems = db.disciplineTemplate||[];
+  const areaStats = autoAreaTaskStats(user, period)(area);
+  const discStats = autoDisciplineStats(user, period);
+  const pro={}, disc={};
+  let filled=0;
+  // [YC-HM] Ưu tiên 1: các việc GẮN ĐÚNG HẠNG MỤC → tính riêng cho từng chỉ tiêu
+  const areaTasks = _tasksOfUserAreaPeriod(user, period, area);
+  proItems.forEach((it,i)=>{
+    const linked = areaTasks.filter(t=>(t.kpiItemName||'')===it.name);
+    if(linked.length){
+      const val = computeItemActualFromTasks(it, linked);
+      if(val!==null && val!==undefined){
+        pro[i]={target: it.target, actual: val, auto:true, autoKey:'item_tasks', taskCount:linked.length};
+        filled++;
+      }
+      return;
+    }
+    // Ưu tiên 2 (như cũ): nguồn tự động theo mảng nếu chỉ tiêu có autoKey phù hợp
+    const key=resolveAutoKey(area, it);
+    if(!key || key==='item_tasks' || AUTO_KPI_SOURCES[key]?.scope==='disc') return;
+    const val=computeAutoActual(key, areaStats, null);
+    if(val!==null && val!==undefined){ pro[i]={target: it.target, actual: val, auto:true, autoKey:key}; filled++; }
+  });
+  discItems.forEach((it,i)=>{
+    const key=resolveAutoKey('_disc', it);
+    if(!key) return;
+    const val=computeAutoActual(key, null, discStats);
+    if(val!==null && val!==undefined){ disc[i]={target: it.target, actual: val, auto:true, autoKey:key}; filled++; }
+  });
+  return {pro, disc, filled, areaStats, discStats};
+}
+
+/* Ghi bản vá tự động vào kpiEvals (giữ nguyên các chỉ tiêu chấm tay đã có) */
+function applyAutoToEval(db, userId, period, area){
+  const patch=buildAutoEvalPatch(getDB().users.find(u=>u.id===userId)||{id:userId}, period, area);
+  let ev=db.kpiEvals.find(e=>e.userId===userId && e.period===period && e.area===area);
+  if(!ev){
+    ev={id:uid('ev'), userId, area, period, pro:{}, disc:{}, note:'',
+        evaluatorId:(currentUser()||{}).id, createdAt:Date.now()};
+    db.kpiEvals.push(ev);
+  }
+  ev.pro = ev.pro||{}; ev.disc = ev.disc||{};
+  Object.keys(patch.pro).forEach(i=>{ ev.pro[i]=patch.pro[i]; });
+  Object.keys(patch.disc).forEach(i=>{ ev.disc[i]=patch.disc[i]; });
+  ev._autoAppliedAt=Date.now();
+  ev._autoAppliedBy=(currentUser()||{}).id;
+  ev.updatedAt=Date.now();
+  return patch.filled;
+}
+
+/* Áp dụng cho 1 NV · 1 mảng (nút trên từng dòng) */
+window.applyAutoKPIOne = function(userId, period, area){
+  const db=getDB();
+  const filled=applyAutoToEval(db, userId, period, area);
+  if(!filled){ toast('Chưa có dữ liệu công việc/chấm công đo được cho mảng này trong kỳ','warn'); return; }
+  saveDB(db);
+  if(document.getElementById('kpi-tbody')) renderKPIRows();
+  toast(`Đã áp dụng ${filled} chỉ tiêu tự động vào KPI chính thức`);
+};
+
+/* Áp dụng HÀNG LOẠT cho toàn bộ NV trong kỳ (nút trên đầu trang) */
+window.applyAutoKPIAll = function(period){
+  const p = period || (document.getElementById('kpi-period')?.value) || thisPeriod();
+  if(!confirm('Áp dụng KPI tự động (tiến độ / đúng hạn / khối lượng / ý thức) vào bản đánh giá CHÍNH THỨC cho TẤT CẢ nhân viên trong '+fmtPeriod(p)+'?\n\nCác chỉ tiêu tự động sẽ được ghi đè bằng số máy chấm; các chỉ tiêu chấm tay giữ nguyên. Bạn vẫn có thể mở từng phiếu để xem lại và chỉnh sửa.')) return;
+  const db=getDB();
+  const emps=db.users.filter(x=>x.role!=='admin');
+  let totalFilled=0, evCount=0;
+  emps.forEach(e=>{
+    getUserAssignments(e).forEach(asg=>{
+      const f=applyAutoToEval(db, e.id, p, asg.area);
+      if(f>0){ totalFilled+=f; evCount++; }
+    });
+  });
+  saveDB(db);
+  if(document.getElementById('kpi-tbody')) renderKPIRows();
+  toast(`Đã áp dụng tự động: ${totalFilled} chỉ tiêu trên ${evCount} phiếu KPI (${fmtPeriod(p)})`);
+};
+
+/* Điền số liệu tự động vào FORM đang mở (nút trong hộp chấm KPI) */
+window.fillFormAuto = function(userId, period, area){
+  const db=getDB();
+  const user=db.users.find(u=>u.id===userId); if(!user) return;
+  const patch=buildAutoEvalPatch(user, period, area);
+  if(!patch.filled){ toast('Chưa có dữ liệu tự động đo được cho kỳ này','warn'); return; }
+  const setVal=(id,val)=>{ const el=document.getElementById(id); if(el){ el.value=val; } };
+  Object.keys(patch.pro).forEach(i=>{ setVal(`pro-a-${i}`, patch.pro[i].actual); setVal(`pro-t-${i}`, patch.pro[i].target); });
+  Object.keys(patch.disc).forEach(i=>{ setVal(`disc-a-${i}`, patch.disc[i].actual); setVal(`disc-t-${i}`, patch.disc[i].target); });
+  if(typeof recalcKPILive==='function') recalcKPILive();
+  toast(`Đã lấy ${patch.filled} số liệu tự động. Kiểm tra lại rồi bấm 💾 Lưu KPI.`);
+};
+
 window.confirmTaskComplete = function(taskId){
   const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  // [YC5] Chỉ cấp Quản lý (hoặc người giao việc không phải NV) được duyệt hoàn thành
+  if(!canApproveTaskOf(t, currentUser())){ toast('⛔ Chỉ cấp QUẢN LÝ được duyệt hoàn thành công việc này','error'); return; }
   if(!t.pendingComplete){ toast('Không có đề xuất hoàn thành','warn'); return; }
   t.status='done'; t.progress=100; t.pendingComplete=false;
   t.confirmedAt=Date.now(); t.confirmedBy=currentUser()?.id;
@@ -3072,6 +3686,7 @@ window.confirmTaskComplete = function(taskId){
 };
 window.rejectTaskComplete = function(taskId){
   const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  if(!canApproveTaskOf(t, currentUser())){ toast('⛔ Chỉ cấp QUẢN LÝ được duyệt hoàn thành công việc này','error'); return; }
   t.pendingComplete=false; t.pendingCompleteBy=null;
   saveDB(db); toast('Đã TỪ CHỐI đề xuất hoàn thành','warn'); render();
 };
@@ -3336,16 +3951,28 @@ window.openTaskForm = function(id){
       <div class="field"><label>Tên nhiệm vụ*</label><input id="t-title" value="${escapeHtml(t?.title||'')}"></div>
       <div class="grid-2">
         <div class="field"><label>Người thực hiện*</label>
-          <select id="t-assignee">${emps.map(e=>{
+          <select id="t-assignee" onchange="document.getElementById('t-assignee-search').value=''">${emps.map(e=>{
             const areas = getUserAreas(e).map(a=>(getArea(a)||{}).short).filter(Boolean).join(',');
             return `<option value="${e.id}" ${t?.assigneeId===e.id?'selected':''}>${escapeHtml(e.name)} (${escapeHtml(e.code||e.username)})${areas?' · '+areas:''}</option>`;
           }).join('')}</select>
+          <!-- [YC4] Cách 2: gõ tên tự do — phần mềm so khớp (không dấu) và gợi ý để chọn -->
+          <div style="position:relative;margin-top:6px">
+            <input id="t-assignee-search" placeholder="🔍 Hoặc gõ tên để tìm nhanh (VD: tuan, hải yến…)" autocomplete="off"
+              oninput="renderAssigneeSuggest(this.value)" onfocus="renderAssigneeSuggest(this.value)"
+              style="font-size:13px">
+            <div id="t-assignee-sug" style="display:none;position:absolute;left:0;right:0;top:100%;z-index:60;background:#fff;border:1px solid #cbd5e1;border-radius:8px;max-height:190px;overflow:auto;box-shadow:0 10px 25px rgba(0,0,0,.15)"></div>
+          </div>
+          <div class="hint muted">Chọn trong danh sách (đủ NV cả 3 công ty) hoặc gõ tên — phần mềm tự so khớp và gợi ý.</div>
         </div>
         <div class="field"><label>Mảng công việc <span class="muted" style="font-size:11px">(quyết định mảng KPI gắn với task)</span></label>
-          <select id="t-area">
+          <select id="t-area" onchange="refreshTaskKpiItems('t-area','t-kpiitem')">
             <option value="">— Chọn —</option>
             ${WORK_AREAS.map(a=>`<option value="${a.id}" ${t?.area===a.id?'selected':''}>${escapeHtml(a.name)}</option>`).join('')}
           </select>
+        </div>
+        <div class="field" style="grid-column:1/-1"><label>🎯 Hạng mục KPI trong mảng <span class="muted" style="font-size:11px">(để phần mềm tự chấm KPI CHÍNH XÁC theo từng chỉ tiêu)</span></label>
+          <select id="t-kpiitem"><option value="">— Chọn mảng trước —</option></select>
+          <div class="hint muted">Chọn đúng chỉ tiêu KPI mà công việc này đóng góp vào — khi "Áp dụng KPI tự động", phần mềm gom các việc theo từng hạng mục để tính điểm đúng chỉ tiêu đó.</div>
         </div>
         <div class="field"><label>Deadline</label><input id="t-due" type="date" value="${t?.dueDate?new Date(t.dueDate).toISOString().slice(0,10):''}"></div>
         <div class="field"><label>Trạng thái</label>
@@ -3359,8 +3986,63 @@ window.openTaskForm = function(id){
       <div class="field"><label>Ghi chú</label><textarea id="t-note" rows="3">${escapeHtml(t?.note||'')}</textarea></div>
     `,
     footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
-            <button class="btn success" onclick="saveTask('${id||''}')">Lưu</button>`
+            <button class="btn success" onclick="saveTask('${id||''}')">Lưu</button>`,
+    onShown:()=>{ refreshTaskKpiItems('t-area','t-kpiitem', t?.kpiItemName||''); }
   });
+};
+/* [YC-HM] Nạp danh sách HẠNG MỤC KPI theo mảng đã chọn (dùng chung cho form giao việc & tự giao việc) */
+window.refreshTaskKpiItems = function(areaSelId, itemSelId, selectedName){
+  const areaSel=document.getElementById(areaSelId);
+  const itemSel=document.getElementById(itemSelId);
+  if(!areaSel||!itemSel) return;
+  const db=getDB();
+  const area=areaSel.value;
+  const items=(area && db.kpiTemplates[area])||[];
+  if(!area || !items.length){
+    itemSel.innerHTML='<option value="">— '+(area?'Mảng này chưa có chỉ tiêu KPI':'Chọn mảng trước')+' —</option>';
+    return;
+  }
+  const cur = selectedName!==undefined ? selectedName : itemSel.value;
+  itemSel.innerHTML='<option value="">— Không gắn hạng mục cụ thể (tính chung theo mảng) —</option>'+
+    items.map(it=>`<option value="${escapeHtml(it.name)}" ${cur===it.name?'selected':''}>${escapeHtml(it.name)} (${(it.weight*100).toFixed(0)}%)</option>`).join('');
+};
+/* [YC4] Gợi ý người thực hiện khi gõ tên tự do (so khớp không dấu theo tên/mã/username) */
+window.renderAssigneeSuggest = function(q){
+  const box=document.getElementById('t-assignee-sug'); if(!box) return;
+  const sel=document.getElementById('t-assignee');
+  const db=getDB();
+  const emps=db.users.filter(x=>x.role!=='admin');
+  const nq=_normVN(q);
+  if(!nq){ box.style.display='none'; return; }
+  const matches=emps.filter(e=>
+    _normVN(e.name).includes(nq) ||
+    _normVN(e.code||'').includes(nq) ||
+    _normVN(e.username||'').includes(nq)
+  ).slice(0,8);
+  if(!matches.length){
+    box.innerHTML='<div style="padding:8px 10px;color:#94a3b8;font-size:12px">Không tìm thấy nhân viên phù hợp — kiểm tra lại tên hoặc chọn trực tiếp trong danh sách.</div>';
+    box.style.display='block'; return;
+  }
+  box.innerHTML=matches.map(e=>{
+    const co=getCompany(e.companyId);
+    const areas=getUserAreas(e).map(a=>(getArea(a)||{}).short).filter(Boolean).join(',');
+    return `<div class="asg-sug-item" onclick="pickAssignee('${e.id}')" style="padding:7px 10px;cursor:pointer;display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid #f1f5f9"
+      onmouseover="this.style.background='#eef2ff'" onmouseout="this.style.background=''">
+      <span><b>${escapeHtml(e.name)}</b> <span class="muted" style="font-size:11px">(${escapeHtml(e.code||e.username)})</span></span>
+      <span style="font-size:11px"><span class="badge co">${escapeHtml(co.code)}</span>${areas?' '+areas:''}</span>
+    </div>`;
+  }).join('');
+  box.style.display='block';
+};
+window.pickAssignee = function(empId){
+  const sel=document.getElementById('t-assignee');
+  const box=document.getElementById('t-assignee-sug');
+  const inp=document.getElementById('t-assignee-search');
+  if(sel) sel.value=empId;
+  const db=getDB(); const e=db.users.find(x=>x.id===empId);
+  if(inp && e) inp.value=e.name;
+  if(box) box.style.display='none';
+  toast('Đã chọn người thực hiện: '+(e?e.name:''),'info');
 };
 window.saveTask = function(id){
   const db=getDB();
@@ -3371,6 +4053,7 @@ window.saveTask = function(id){
   t.title=v('t-title').trim();
   t.assigneeId=v('t-assignee');
   t.area=v('t-area');
+  t.kpiItemName=document.getElementById('t-kpiitem')?.value||''; // [YC-HM] hạng mục KPI gắn với việc
   const due=v('t-due'); t.dueDate=due?new Date(due).getTime():null;
   t.status=v('t-status');
   t.note=v('t-note').trim();
@@ -3378,6 +4061,8 @@ window.saveTask = function(id){
   saveDB(db); closeModal(); render(); toast('Đã lưu');
 };
 window.delTask = function(id){
+  // [YC5] Khi việc đã được giao, CHỈ cấp Quản lý (admin/pm/manager) mới có quyền xóa
+  if(!canApprove()){ toast('⛔ Chỉ cấp Quản lý mới có quyền xóa công việc đã giao','error'); return; }
   if(!confirm('Xóa nhiệm vụ?')) return;
   const db=getDB(); db.tasks=db.tasks.filter(t=>t.id!==id); saveDB(db); render(); toast('Đã xóa');
 };
@@ -3525,10 +4210,14 @@ function viewKPI(main, u){
       <div class="actions">
         <input type="month" id="kpi-period" value="${period}" style="width:auto">
         <button class="btn outline" onclick="reloadKPIPeriod()">Tải lại</button>
+        <button class="btn" style="background:#6366f1" onclick="applyAutoKPIAll()">🔗 Áp dụng KPI tự động → bản chính thức</button>
+        <button class="btn" style="background:#0f766e" onclick="openYearKpiModal()">📅 KPI cả năm</button>
       </div>
     </div>
     <div class="help-text">Chấm KPI cho từng nhân viên theo tháng. Nhân viên đa nhiệm sẽ có <b>nhiều dòng KPI</b> — mỗi dòng tương ứng 1 mảng (Thiết kế / Dự án / Thương mại). Lương cuối tháng = Lương cứng + Hỗ trợ + Σ Thưởng KPI từng mảng.</div>
+    <div class="help-text" style="background:#eef2ff;border-color:#c7d2fe">🔗 <b>Liên kết tự động:</b> nút <b>"Áp dụng KPI tự động → bản chính thức"</b> sẽ lấy số liệu <b>tiến độ, đúng hạn, khối lượng công việc</b> (từ mục Theo dõi công việc) và <b>đi làm đúng giờ, tăng ca</b> (từ Chấm công) để tự điền phần "Thực tế" cho các chỉ tiêu đo được — đánh dấu 🤖. Các chỉ tiêu định tính (chất lượng, thái độ, doanh thu…) vẫn do quản lý chấm tay. Sau khi áp dụng, mở từng phiếu để xem lại và điều chỉnh nếu cần.</div>
     ${renderAutoKpiSummary(emps, period)}
+    ${renderLeaderKpiPanel(period)}
     <div class="tbl-wrap">
       <table>
         <thead><tr>
@@ -3585,6 +4274,7 @@ function renderKPIRows(){
         disc=(f.disc.total*f.wDisc).toFixed(1);
         total=`<b>${f.total.toFixed(1)}</b>`;
         rt=`<span class="badge ${f.rating.css}">${f.rating.label}</span>`;
+        if(ev._autoAppliedAt) total+=' <span class="badge" style="background:#e0e7ff;color:#3730a3" title="Đã áp dụng KPI tự động lúc '+fmtDateTime(ev._autoAppliedAt)+'">🤖</span>';
       }
       const ar=getArea(asg.area);
       // Dòng ĐẦU của mỗi NV: in Mã NV, Họ tên, Công ty với rowspan = số mảng
@@ -3604,6 +4294,7 @@ function renderKPIRows(){
         <td>${rt}</td>
         <td>
           <button class="btn sm success" onclick="openKPIForm('${e.id}','${period}','${asg.area}')">${ev?'Sửa KPI':'Chấm KPI'}</button>
+          <button class="btn sm" style="background:#6366f1" title="Áp dụng số liệu tự động (tiến độ/đúng hạn/khối lượng + ý thức) cho riêng dòng này" onclick="applyAutoKPIOne('${e.id}','${period}','${asg.area}')">🔗 TĐ</button>
         </td>
       </tr>`);
     });
@@ -3623,18 +4314,30 @@ window.openKPIForm = function(userId, period, area){
     area = asgs[0].area;
   }
   if(!userHasArea(u, area)){ toast('Nhân viên chưa đảm nhiệm mảng này','error'); return; }
+  // [FIX-ĐB] Ghi nhớ mảng đang chấm để recalcKPILive dùng ĐÚNG template (không đoán nữa)
+  window._kpiFormArea = area;
   let ev=db.kpiEvals.find(e=>e.userId===userId && e.period===period && e.area===area);
   if(!ev){ ev={id:uid('ev'), userId, area, period, pro:{}, disc:{}, note:'', evaluatorId:currentUser().id, createdAt:Date.now()}; }
+  // [YC-YT] Điểm Ý THỨC chỉ chấm 1 LẦN/tháng, dùng chung cho mọi mảng:
+  //         nếu phiếu này chưa có điểm Ý thức, tự lấy từ phiếu mảng khác cùng tháng.
+  if(!ev.disc || !Object.keys(ev.disc).length){
+    const otherEv = db.kpiEvals.find(e=>e.userId===userId && e.period===period && e.id!==ev.id && e.disc && Object.keys(e.disc).length);
+    if(otherEv) ev.disc = JSON.parse(JSON.stringify(otherEv.disc));
+  }
   const proItems = db.kpiTemplates[area]||[];
   const discItems = db.disciplineTemplate;
 
-  const buildSection = (items, src, prefix)=> items.map((it,i)=>{
+  const buildSection = (items, src, prefix, areaArg)=> items.map((it,i)=>{
     const v = src[i]||{};
     const tgt = (v.target!==undefined && v.target!=='') ? v.target : it.target;
     const act = (v.actual!==undefined && v.actual!=='') ? v.actual : '';
+    const aKey = resolveAutoKey(areaArg, it);
+    const scopeOk = aKey && ((areaArg==='_disc' && AUTO_KPI_SOURCES[aKey]?.scope==='disc') || (areaArg!=='_disc' && AUTO_KPI_SOURCES[aKey]?.scope==='area'));
+    const autoBadge = scopeOk ? ` <span class="badge" style="background:#e0e7ff;color:#3730a3" title="Chỉ tiêu này có thể chấm TỰ ĐỘNG từ ${escapeHtml(AUTO_KPI_SOURCES[aKey]?.label||'dữ liệu công việc')}">🤖 tự động</span>` : '';
+    const autoMark = (v.auto ? ' <span class="badge" style="background:#dcfce7;color:#166534" title="Số liệu do phần mềm tự chấm">✓ máy chấm</span>' : '');
     return `<tr>
       <td>${i+1}</td>
-      <td>${escapeHtml(it.name)}<div class="hint muted">${escapeHtml(it.desc||'')}</div></td>
+      <td>${escapeHtml(it.name)}${autoBadge}${autoMark}<div class="hint muted">${escapeHtml(it.desc||'')}</div><div class="hint" style="color:#4f46e5;font-size:10px">🧮 ${escapeHtml(kpiCalcLabel(it))}</div></td>
       <td>${it.unit}</td>
       <td>${(it.weight*100).toFixed(0)}%</td>
       <td><input type="number" class="score-input target" id="${prefix}-t-${i}" value="${tgt}" oninput="recalcKPILive()"></td>
@@ -3648,6 +4351,7 @@ window.openKPIForm = function(userId, period, area){
     title:`🎯 Chấm KPI — ${u.name} · ${fmtPeriod(period)} · ${getArea(area).name}`, size:'lg',
     html:`
       <div class="help-text">Gợi ý: nhập "Thực tế" → phần mềm tự tính % đạt và điểm theo trọng số. Tổng KPI = Chuyên môn × ${(db.settings.kpiWeightPro*100).toFixed(0)}% + Ý thức × ${(db.settings.kpiWeightDisc*100).toFixed(0)}%.</div>
+      <div class="help-text" style="background:#eef2ff;border-color:#c7d2fe">🤖 Chỉ tiêu gắn nhãn <b>tự động</b> có thể lấy số liệu từ công việc & chấm công. Bấm <b>"🔗 Lấy số liệu tự động"</b> để phần mềm điền phần "Thực tế", sau đó kiểm tra lại rồi bấm 💾 Lưu.</div>
       <div class="tabs">
         <button class="tab active" data-t="pro" onclick="switchKPITab(event,'pro')">KPI Chuyên môn</button>
         <button class="tab" data-t="disc" onclick="switchKPITab(event,'disc')">KPI Ý thức</button>
@@ -3656,13 +4360,14 @@ window.openKPIForm = function(userId, period, area){
       <div id="kpi-tab-pro">
         <div class="tbl-wrap"><table>
           <thead><tr><th>#</th><th>Chỉ tiêu</th><th>ĐVT</th><th>Trọng số</th><th>Mục tiêu</th><th>Thực tế</th><th>% Đạt</th><th>Điểm</th></tr></thead>
-          <tbody>${buildSection(proItems, ev.pro, 'pro')}</tbody>
+          <tbody>${buildSection(proItems, ev.pro, 'pro', area)}</tbody>
         </table></div>
       </div>
       <div id="kpi-tab-disc" style="display:none">
+        <div class="help-text" style="background:#fefce8;border-color:#fde047">👥 <b>Điểm Ý thức chấm 1 LẦN mỗi tháng và DÙNG CHUNG cho mọi mảng.</b> Khi lưu, điểm Ý thức ở đây sẽ tự đồng bộ sang các phiếu KPI mảng khác của nhân viên trong cùng tháng.</div>
         <div class="tbl-wrap"><table>
           <thead><tr><th>#</th><th>Tiêu chí</th><th>ĐVT</th><th>Trọng số</th><th>Mục tiêu</th><th>Thực tế</th><th>% Đạt</th><th>Điểm</th></tr></thead>
-          <tbody>${buildSection(discItems, ev.disc, 'disc')}</tbody>
+          <tbody>${buildSection(discItems, ev.disc, 'disc', '_disc')}</tbody>
         </table></div>
       </div>
       <div id="kpi-tab-sum" style="display:none">
@@ -3678,9 +4383,22 @@ window.openKPIForm = function(userId, period, area){
       </div>
     `,
     footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
+            <button class="btn outline" onclick="syncTargetsFromConfig('${area}')" title="Cập nhật cột Mục tiêu theo Cấu hình KPI mới nhất (giữ nguyên Thực tế)">⟳ Mục tiêu theo cấu hình</button>
+            <button class="btn" style="background:#6366f1" onclick="fillFormAuto('${userId}','${period}','${area}')">🔗 Lấy số liệu tự động</button>
             <button class="btn success" onclick="saveKPIForm('${userId}','${period}','${ev.id}','${area}')">💾 Lưu KPI</button>`,
     onShown:()=> recalcKPILive()
   });
+};
+/* [FIX-ĐB] Đồng bộ cột MỤC TIÊU trong form chấm theo Cấu hình KPI hiện hành
+   (dùng khi cấu hình vừa được sửa nhưng phiếu cũ còn lưu mục tiêu cũ). Giữ nguyên "Thực tế". */
+window.syncTargetsFromConfig = function(area){
+  const db=getDB();
+  const proItems=db.kpiTemplates[area]||[];
+  const discItems=db.disciplineTemplate||[];
+  proItems.forEach((it,i)=>{ const el=document.getElementById('pro-t-'+i); if(el) el.value=it.target; });
+  discItems.forEach((it,i)=>{ const el=document.getElementById('disc-t-'+i); if(el) el.value=it.target; });
+  recalcKPILive();
+  toast('Đã cập nhật Mục tiêu theo Cấu hình KPI mới nhất — kiểm tra rồi bấm 💾 Lưu');
 };
 window.switchKPITab=function(e,t){
   document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
@@ -3702,8 +4420,7 @@ window.recalcKPILive = function(){
       const aEl=document.getElementById(`${prefix}-a-${i}`);
       if(!tEl||!aEl) return;
       const t=Number(tEl.value), a=Number(aEl.value);
-      const lower = it.unit==='lần'||it.unit==='vụ';
-      const pct = pctAchieve(t,a,lower);
+      const pct = pctAchieveItem(it, tEl.value, aEl.value); // [YC-CT] theo cách tính đã cấu hình
       const pts = it.weight*pct*100;
       total+=pts;
       const pctEl=document.getElementById(`${prefix}-pct-${i}`);
@@ -3713,12 +4430,17 @@ window.recalcKPILive = function(){
     });
     return total;
   }
-  // detect area from the open modal title (or fetch from data) – easier: try both templates
-  // We must know which template applies. Workaround: find pro section by item count match.
-  let proItems=null;
-  for(const a of Object.keys(db.kpiTemplates)){
-    const tpl=db.kpiTemplates[a];
-    if(document.getElementById('pro-t-'+(tpl.length-1))){ proItems=tpl; break; }
+  // [FIX-ĐB] KHÔNG đoán mảng theo số dòng nữa (sai khi Firebase đảo thứ tự key:
+  // commercial 4 chỉ tiêu đứng trước design 6 chỉ tiêu → khớp nhầm template, tính sai
+  // trọng số & cách tính). Dùng thẳng mảng đã ghi nhớ khi mở form (_kpiFormArea).
+  let proItems = (window._kpiFormArea && db.kpiTemplates[window._kpiFormArea]) || null;
+  if(!proItems){
+    // Dự phòng (form cũ chưa set _kpiFormArea): tìm template khớp CHÍNH XÁC số dòng —
+    // phần tử cuối tồn tại VÀ phần tử ngay sau KHÔNG tồn tại
+    for(const a of Object.keys(db.kpiTemplates)){
+      const tpl=db.kpiTemplates[a];
+      if(document.getElementById('pro-t-'+(tpl.length-1)) && !document.getElementById('pro-t-'+tpl.length)){ proItems=tpl; break; }
+    }
   }
   const discItems=db.disciplineTemplate;
   if(!proItems) return;
@@ -3767,14 +4489,25 @@ window.saveKPIForm = function(userId, period, evId, area){
   ev.disc = grab('disc', discItems);
   ev.note = document.getElementById('kpi-note')?.value || '';
   ev.updatedAt = Date.now();
-  saveDB(db); closeModal(); render(); toast('Đã lưu KPI cho mảng: '+getArea(area).name);
+  // [YC-YT] Đồng bộ điểm Ý THỨC (chấm 1 lần) sang TẤT CẢ phiếu KPI mảng khác cùng tháng
+  let synced=0;
+  db.kpiEvals.forEach(e=>{
+    if(e.userId===userId && e.period===period && e.id!==ev.id){
+      e.disc = JSON.parse(JSON.stringify(ev.disc));
+      e.updatedAt = Date.now();
+      synced++;
+    }
+  });
+  saveDB(db); closeModal(); render();
+  toast('Đã lưu KPI mảng '+getArea(area).name + (synced?` — điểm Ý thức đã đồng bộ sang ${synced} mảng khác`:''));
 };
 
 /* ============================================================
    KPI CONFIG (Admin) - Cấu hình mẫu KPI
    ============================================================ */
 function viewKPIConfig(main, u){
-  if(u.role!=='admin'){ main.innerHTML='<div class="empty">Chỉ Admin được phép.</div>'; return; }
+  // [YC2] Cho phép cả cấp QUẢN LÝ (pm) và TRƯỞNG PHÒNG (manager) tự định nghĩa hạng mục KPI
+  if(!(u.role==='admin'||u.role==='pm'||u.role==='manager')){ main.innerHTML='<div class="empty">Chỉ Admin / Quản lý / Trưởng phòng được phép.</div>'; return; }
   const db=getDB();
   main.innerHTML=`
     <div class="page-head"><h1>⚙️ Cấu hình mẫu KPI</h1></div>
@@ -3801,19 +4534,20 @@ function viewKPIConfig(main, u){
 }
 function kpiItemsTable(items, area, type){
   return `<div class="tbl-wrap"><table>
-    <thead><tr><th>#</th><th>Tên chỉ tiêu</th><th>ĐVT</th><th>Trọng số</th><th>Mục tiêu mẫu</th><th>Mô tả</th><th></th></tr></thead>
+    <thead><tr><th>#</th><th>Tên chỉ tiêu</th><th>ĐVT</th><th>Trọng số</th><th>Mục tiêu mẫu</th><th>Cách tính % đạt</th><th>Mô tả</th><th></th></tr></thead>
     <tbody>${items.map((it,i)=>`<tr>
       <td>${i+1}</td>
       <td><b>${escapeHtml(it.name)}</b></td>
       <td>${escapeHtml(it.unit)}</td>
       <td>${(it.weight*100).toFixed(0)}%</td>
       <td>${escapeHtml(String(it.target))}</td>
+      <td style="font-size:11px;color:#4f46e5">${escapeHtml(kpiCalcLabel(it))}</td>
       <td class="muted">${escapeHtml(it.desc||'')}</td>
       <td>
         <button class="btn sm outline" onclick="editKPIItem('${area}','${type}',${i})">Sửa</button>
         <button class="btn sm danger" onclick="delKPIItem('${area}','${type}',${i})">Xóa</button>
       </td>
-    </tr>`).join('') || '<tr><td colspan="7" class="empty">Chưa có chỉ tiêu</td></tr>'}</tbody>
+    </tr>`).join('') || '<tr><td colspan="8" class="empty">Chưa có chỉ tiêu</td></tr>'}</tbody>
   </table></div>`;
 }
 window.addKPIItem = function(area, type){ openKPIItemForm(area, type, -1); };
@@ -3840,11 +4574,115 @@ function openKPIItemForm(area, type, idx){
         <div class="field"><label>Mục tiêu mẫu</label><input id="k-target" type="number" value="${it.target}"></div>
       </div>
       <div class="field"><label>Mô tả</label><textarea id="k-desc" rows="2">${escapeHtml(it.desc||'')}</textarea></div>
+      <div class="field"><label>🧮 Cách tính % Đạt (người dùng tự định nghĩa)</label>
+        <select id="k-calctype" onchange="onKpiCalcTypeChange(this)">
+          ${Object.keys(KPI_CALC_TYPES).map(k=>`<option value="${k}" ${(it.calcType||'auto')===k?'selected':''}>${escapeHtml(KPI_CALC_TYPES[k].label)}</option>`).join('')}
+        </select>
+        <div class="hint muted" id="k-calc-hint">${escapeHtml((KPI_CALC_TYPES[it.calcType||'auto']||{}).desc||'')}</div>
+        <!-- [YC-BT] BẢNG NHẬP DỮ LIỆU BẬC THANG — thêm/xóa từng bậc, có ô "còn lại" và xem trước -->
+        <div id="k-steps-wrap" style="display:${(it.calcType||'').startsWith('steps')?'block':'none'};margin-top:8px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <b style="font-size:13px">📋 Bảng bậc thang tính điểm</b>
+            <button type="button" class="btn sm success" onclick="addKpiStep()">+ Thêm bậc</button>
+          </div>
+          <table style="width:100%;background:#fff;border-radius:6px">
+            <thead><tr>
+              <th style="width:40px">Bậc</th>
+              <th id="k-steps-cmp-head">Điều kiện (Thực tế so với ngưỡng)</th>
+              <th style="width:110px">Ngưỡng</th>
+              <th style="width:110px">Điểm nhận (%)</th>
+              <th style="width:46px"></th>
+            </tr></thead>
+            <tbody id="k-steps-tbody"></tbody>
+            <tfoot><tr style="background:#fef9c3">
+              <td class="center">∅</td>
+              <td><b>Còn lại</b> (không rơi vào bậc nào ở trên)</td>
+              <td class="center">—</td>
+              <td><input type="number" id="k-steps-else" step="any" min="0" max="120" onchange="updKpiStepsElse(this.value)" style="width:90px;text-align:center"></td>
+              <td></td>
+            </tr></tfoot>
+          </table>
+          <div class="hint" id="k-steps-preview" style="margin-top:6px;color:#0f766e;font-weight:600"></div>
+          <div class="hint muted">Điểm chỉ tiêu = Trọng số × Điểm nhận(%) × 100. Ví dụ "đi muộn": bậc ≤0→100%, ≤2→80%, ≤5→50%, còn lại→0%.</div>
+        </div>
+      </div>
+      <div class="field"><label>🔗 Nguồn dữ liệu tự động (liên kết KPI ↔ công việc)</label>
+        <select id="k-autokey">
+          <option value="__auto__" ${it.autoKey===undefined?'selected':''}>Tự suy theo tên chỉ tiêu (mặc định)</option>
+          <option value="" ${it.autoKey===''?'selected':''}>❌ Không tự động — chấm tay</option>
+          ${Object.keys(AUTO_KPI_SOURCES).map(k=>`<option value="${k}" ${it.autoKey===k?'selected':''}>${escapeHtml(AUTO_KPI_SOURCES[k].label)} (${AUTO_KPI_SOURCES[k].scope==='disc'?'ý thức':'theo mảng'})</option>`).join('')}
+        </select>
+        <div class="hint muted">Chọn dữ liệu mà phần mềm dùng để tự chấm chỉ tiêu này khi bấm "Áp dụng KPI tự động". Để "mặc định" nếu muốn hệ thống tự nhận diện theo tên.</div>
+      </div>
     `,
     footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
-            <button class="btn success" onclick="saveKPIItem('${area}','${type}',${idx})">Lưu</button>`
+            <button class="btn success" onclick="saveKPIItem('${area}','${type}',${idx})">Lưu</button>`,
+    onShown:()=>{ _initKpiStepsState(it.steps, it.calcType); renderKpiStepsTable(); }
   });
 }
+window._kpiCalcDesc = function(k){ return (KPI_CALC_TYPES[k]||{}).desc||''; };
+
+/* ============================================================
+   [YC-BT] BẢNG NHẬP BẬC THANG — trạng thái + thao tác thêm/xóa/sửa
+   ============================================================ */
+let _kpiSteps=[];      // [{lim, pct}]
+let _kpiStepsElse=0;   // điểm % cho phần "còn lại"
+function _initKpiStepsState(stepsStr, calcType){
+  const p=parseKpiSteps(stepsStr||'');
+  _kpiSteps=p.steps.length ? p.steps.slice() : [{lim:0,pct:100}];
+  _kpiStepsElse=p.steps.length ? p.elsePct : 0;
+}
+window.renderKpiStepsTable = function(){
+  const tbody=document.getElementById('k-steps-tbody'); if(!tbody) return;
+  const ct=document.getElementById('k-calctype')?.value||'steps_down';
+  const up = ct==='steps_up';
+  const cmp = up ? '≥' : '≤';
+  const head=document.getElementById('k-steps-cmp-head');
+  if(head) head.textContent = up ? 'Nếu Thực tế ≥ ngưỡng (bậc TĂNG)' : 'Nếu Thực tế ≤ ngưỡng (bậc GIẢM)';
+  tbody.innerHTML=_kpiSteps.map((s,i)=>`<tr>
+    <td class="center"><b>${i+1}</b></td>
+    <td style="color:#475569">Thực tế <b style="color:#1e3a8a">${cmp} ${s.lim}</b> → nhận <b style="color:#16a34a">${s.pct}%</b></td>
+    <td><input type="number" step="any" value="${s.lim}" onchange="updKpiStep(${i},'lim',this.value)" style="width:95px;text-align:center"></td>
+    <td><input type="number" step="any" min="0" max="120" value="${s.pct}" onchange="updKpiStep(${i},'pct',this.value)" style="width:90px;text-align:center"></td>
+    <td><button type="button" class="btn sm danger" onclick="delKpiStep(${i})" title="Xóa bậc này">✗</button></td>
+  </tr>`).join('');
+  const elseEl=document.getElementById('k-steps-else');
+  if(elseEl && document.activeElement!==elseEl) elseEl.value=_kpiStepsElse;
+  const pv=document.getElementById('k-steps-preview');
+  if(pv){
+    const sorted=_kpiSteps.slice().sort((a,b)=> up ? b.lim-a.lim : a.lim-b.lim);
+    pv.textContent='✔ Công thức đang áp: '+sorted.map(s=>`${cmp}${s.lim} → ${s.pct}%`).join('  ·  ')+`  ·  còn lại → ${_kpiStepsElse}%`;
+  }
+};
+window.updKpiStep = function(i, field, val){
+  if(_kpiSteps[i]) _kpiSteps[i][field]=Number(String(val).replace(',','.'))||0;
+  renderKpiStepsTable();
+};
+window.delKpiStep = function(i){
+  _kpiSteps.splice(i,1);
+  if(!_kpiSteps.length) _kpiSteps=[{lim:0,pct:100}];
+  renderKpiStepsTable();
+};
+window.addKpiStep = function(){
+  const last=_kpiSteps[_kpiSteps.length-1]||{lim:0,pct:100};
+  const ct=document.getElementById('k-calctype')?.value||'steps_down';
+  const nextLim = ct==='steps_up' ? Math.max(0,(Number(last.lim)||0)-1) : (Number(last.lim)||0)+1;
+  const nextPct = Math.max(0,(Number(last.pct)||0)-20);
+  _kpiSteps.push({lim:nextLim, pct:nextPct});
+  renderKpiStepsTable();
+};
+window.updKpiStepsElse = function(v){
+  _kpiStepsElse=Number(String(v).replace(',','.'))||0;
+  renderKpiStepsTable();
+};
+window.onKpiCalcTypeChange = function(sel){
+  const v=sel.value;
+  const wrap=document.getElementById('k-steps-wrap');
+  if(wrap) wrap.style.display = v.indexOf('steps')===0 ? 'block' : 'none';
+  const hint=document.getElementById('k-calc-hint');
+  if(hint) hint.textContent=(KPI_CALC_TYPES[v]||{}).desc||'';
+  renderKpiStepsTable();
+};
 window.saveKPIItem = function(area, type, idx){
   const db=getDB();
   const obj={
@@ -3855,9 +4693,20 @@ window.saveKPIItem = function(area, type, idx){
     desc:document.getElementById('k-desc').value.trim()
   };
   if(!obj.name){ toast('Nhập tên','error'); return; }
+  // [YC-CT] Cách tính do người dùng định nghĩa
+  const ct=document.getElementById('k-calctype')?.value||'auto';
+  obj.calcType=ct;
+  if(ct.startsWith('steps')){
+    // [YC-BT] Đọc từ BẢNG bậc thang (thêm/xóa dòng), không còn ô gõ chuỗi
+    const validSteps=_kpiSteps.filter(s=>!isNaN(Number(s.lim)));
+    if(!validSteps.length){ toast('Thêm ít nhất 1 bậc vào bảng bậc thang (nút "+ Thêm bậc")','error'); return; }
+    obj.steps = validSteps.map(s=>`${s.lim}:${s.pct}`).join(', ') + `, else:${_kpiStepsElse}`;
+  }
+  const akRaw=document.getElementById('k-autokey')?.value;
+  if(akRaw!=='__auto__') obj.autoKey=akRaw; // '' = tắt tự động; tên nguồn = ép nguồn; bỏ qua = mặc định tự suy
   const list = type==='pro' ? db.kpiTemplates[area] : db.disciplineTemplate;
   if(idx<0) list.push(obj); else list[idx]=obj;
-  saveDB(db); closeModal(); render(); toast('Đã lưu');
+  saveDB(db); closeModal(); render(); toast('Đã lưu chỉ tiêu — cách tính: '+(KPI_CALC_TYPES[ct]||{}).label);
 };
 
 /* ============================================================
@@ -4814,13 +5663,72 @@ function viewMyTasks(main, u){
   }
 
   main.innerHTML=`
-    <div class="page-head"><h1>📋 Theo dõi công việc của tôi</h1></div>
+    <div class="page-head"><h1>📋 Theo dõi công việc của tôi</h1>
+      <div class="actions">
+        <button class="btn" style="background:#0f766e" onclick="openSelfAssignForm()">➕ Tự giao việc cho mình (trong dự án)</button>
+      </div>
+    </div>
     <div class="help-text">💡 Bạn có thể cập nhật <b>% tiến độ</b> trực tiếp ở cột "Tiến độ" — kéo thanh trượt hoặc nhập số rồi bấm <b>💾</b> Lưu. Khi đạt 100%, công việc tự chuyển sang "Hoàn thành". Tích / bỏ tích ô vuông để chuyển nhanh giữa <b>Hoàn thành</b> và <b>Đang thực hiện</b>.</div>
+    <div class="help-text" style="background:#f0fdfa;border-color:#99f6e4">➕ <b>Tự giao việc:</b> bạn có thể tự tạo công việc cho chính mình trong một dự án. Sau khi tạo, <b>chỉ cấp Quản lý</b> mới có quyền xóa công việc và duyệt tiến độ/hoàn thành. Xin gia hạn phải thực hiện <b>trước hạn ít nhất 12 tiếng</b>.</div>
     ${warnHtml}
     <div id="my-tasks-table-wrap"></div>
   `;
   renderMyTasksTable();
 }
+/* [YC5] NV tự giao việc cho chính mình trong 1 DỰ ÁN */
+window.openSelfAssignForm = function(){
+  const db=getDB(); const me=currentUser(); if(!me) return;
+  const projects=(db.contracts||[]).filter(c=>c.completionStatus!=='completed' && c.completionStatus!=='cancelled');
+  if(!projects.length){ toast('Chưa có dự án đang triển khai để nhận việc','warn'); return; }
+  openModal({
+    title:'➕ Tự giao việc cho mình (trong dự án)',
+    html:`
+      <div class="help-text">Công việc sẽ được gán cho chính bạn. Sau khi tạo, <b>chỉ Quản lý</b> mới được xóa công việc / duyệt tiến độ — bạn cập nhật % tiến độ như công việc bình thường.</div>
+      <div class="field"><label>Dự án*</label>
+        <select id="sa-project">${projects.map(c=>`<option value="${c.id}">${escapeHtml(c.name||c.code||'(chưa đặt tên)')}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Tên công việc*</label><input id="sa-title" placeholder="VD: Bóc khối lượng hệ Sprinkler tầng 3"></div>
+      <div class="grid-2">
+        <div class="field"><label>Mảng công việc</label>
+          <select id="sa-area" onchange="refreshTaskKpiItems('sa-area','sa-kpiitem')">
+            <option value="">— Theo dự án (Quản lý dự án) —</option>
+            ${WORK_AREAS.map(a=>`<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Hạn hoàn thành</label><input id="sa-due" type="date"></div>
+      </div>
+      <div class="field"><label>🎯 Hạng mục KPI trong mảng</label>
+        <select id="sa-kpiitem"><option value="">— Chọn mảng trước —</option></select>
+      </div>
+      <div class="field"><label>Ghi chú</label><textarea id="sa-note" rows="2"></textarea></div>
+    `,
+    footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
+            <button class="btn success" onclick="saveSelfAssignTask()">💾 Tạo công việc</button>`
+  });
+};
+window.saveSelfAssignTask = function(){
+  const db=getDB(); const me=currentUser(); if(!me) return;
+  const v=q=>document.getElementById(q)?.value||'';
+  const title=v('sa-title').trim();
+  if(!title){ toast('Nhập tên công việc','error'); return; }
+  const projectId=v('sa-project');
+  if(!projectId){ toast('Chọn dự án','error'); return; }
+  const due=v('sa-due');
+  db.tasks.push({
+    id:uid('t'), createdAt:Date.now(), createdBy:me.id,
+    projectId,
+    title,
+    assigneeId:me.id,
+    area:v('sa-area')||'',
+    kpiItemName:v('sa-kpiitem')||'', // [YC-HM]
+    status:'inprogress', progress:0,
+    dueDate: due?new Date(due).getTime():null,
+    note:v('sa-note').trim(),
+    selfAssigned:true   // [YC5] đánh dấu việc tự giao — chỉ Quản lý được xóa/duyệt
+  });
+  saveDB(db); closeModal(); render();
+  toast('Đã tự giao việc cho mình — Quản lý sẽ là người duyệt tiến độ & hoàn thành');
+};
 // [PATCH] Tách render bảng công việc của tôi để có thể re-render khi toggle done
 function renderMyTasksTable(){
   const u=currentUser(); if(!u) return;
@@ -4875,7 +5783,14 @@ function renderMyTasksTable(){
           <div style="width:${prog}%;height:6px;background:#1e3a8a"></div>
         </div>
       </td>
-      <td class="muted">${escapeHtml(t.note||'')}${(!isDoneRow && t.dueDate)?`<div style="margin-top:5px"><button class="btn sm outline" style="padding:2px 7px;font-size:11px" onclick="openExtensionRequest('${t.id}')" title="Đề nghị gia hạn thời gian hoàn thành">⏰ Xin gia hạn</button></div>`:''}</td>
+      <td class="muted">${escapeHtml(t.note||'')}${(!isDoneRow && t.dueDate)?(function(){
+        // [YC5] Chỉ cho xin gia hạn khi còn ≥ 12 TIẾNG trước hạn — sau đó nút bị khóa
+        const msLeft = t.dueDate - Date.now();
+        if(msLeft < EXT_MIN_LEAD_MS){
+          return `<div style="margin-top:5px"><button class="btn sm outline" style="padding:2px 7px;font-size:11px;opacity:.45;cursor:not-allowed" disabled title="Đã quá thời điểm cho phép — chỉ được xin gia hạn khi còn ít nhất 12 tiếng trước hạn">⏰ Xin gia hạn (đã khóa)</button><div style="font-size:10px;color:#dc2626">⛔ Còn &lt; 12h — không thể xin gia hạn</div></div>`;
+        }
+        return `<div style="margin-top:5px"><button class="btn sm outline" style="padding:2px 7px;font-size:11px" onclick="openExtensionRequest('${t.id}')" title="Đề nghị gia hạn thời gian hoàn thành (phải trước hạn ít nhất 12 tiếng)">⏰ Xin gia hạn</button></div>`;
+      })():''}</td>
     </tr>`;
   };
   host.innerHTML = `
@@ -4933,8 +5848,18 @@ window.saveMyTaskProgress = function(taskId){
    - Nhân viên đề nghị gia hạn (ngày mới + lý do) → ghi t.extReq (pending)
    - Đệ trình lên NGƯỜI GIAO VIỆC (t.createdBy) để phê duyệt
    ============================================================ */
+/* [YC5] Hạn chót xin gia hạn: phải TRƯỚC hạn công việc ít nhất 12 tiếng */
+const EXT_MIN_LEAD_MS = 12*60*60*1000;
+function extRequestAllowed(t){
+  if(!t || !t.dueDate) return true; // việc chưa đặt hạn → không áp quy tắc
+  return (t.dueDate - Date.now()) >= EXT_MIN_LEAD_MS;
+}
 window.openExtensionRequest = function(taskId){
   const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  if(!extRequestAllowed(t)){
+    toast('⛔ Không thể xin gia hạn: chỉ được đề nghị gia hạn khi còn ít nhất 12 TIẾNG trước hạn hoàn thành.','error');
+    return;
+  }
   const curDue = t.dueDate ? new Date(t.dueDate).toISOString().slice(0,10) : '';
   const giver = db.users.find(x=>x.id===t.createdBy);
   const existing = (t.extReq && t.extReq.status==='pending') ? t.extReq : null;
@@ -4957,6 +5882,13 @@ window.openExtensionRequest = function(taskId){
 };
 window.submitExtensionRequest = function(taskId){
   const db=getDB(); const t=db.tasks.find(x=>x.id===taskId); if(!t) return;
+  // [YC5] Kiểm tra lại quy tắc 12 tiếng ngay tại thời điểm GỬI (chặn cả trường hợp mở form từ trước)
+  if(!extRequestAllowed(t)){
+    const err0=document.getElementById('ext-err');
+    if(err0) err0.textContent='⛔ Đã quá thời điểm cho phép — chỉ được xin gia hạn khi còn ít nhất 12 tiếng trước hạn.';
+    toast('⛔ Không thể gửi: còn dưới 12 tiếng trước hạn hoàn thành.','error');
+    return;
+  }
   const nd=document.getElementById('ext-newdue').value;
   const reason=document.getElementById('ext-reason').value.trim();
   const err=document.getElementById('ext-err');
@@ -5005,7 +5937,9 @@ window.confirmTaskProgress = function(taskId){
   const db=getDB();
   const t = db.tasks.find(x=>x.id===taskId); if(!t) return;
   const me=currentUser();
-  if(!(me && (me.role==='admin' || t.createdBy===me.id))){ toast('Chỉ NGƯỜI GIAO VIỆC hoặc admin được duyệt tiến độ công việc này','error'); return; }
+  // [YC5] Việc TỰ GIAO: NV không được tự duyệt — bất kỳ cấp Quản lý nào cũng duyệt được.
+  //       Việc thường: người giao việc (không phải employee) hoặc admin.
+  if(!canApproveTaskOf(t, me)){ toast('⛔ Chỉ cấp QUẢN LÝ được duyệt tiến độ công việc này','error'); return; }
   if(t.pendingProgress==null){ toast('Không có cập nhật chờ xác nhận','warn'); return; }
   t.progress = t.pendingProgress;
   if(t.progress>=100) t.status='done';
@@ -5022,7 +5956,7 @@ window.rejectTaskProgress = function(taskId){
   const db=getDB();
   const t = db.tasks.find(x=>x.id===taskId); if(!t) return;
   const me=currentUser();
-  if(!(me && (me.role==='admin' || t.createdBy===me.id))){ toast('Chỉ NGƯỜI GIAO VIỆC hoặc admin được duyệt tiến độ công việc này','error'); return; }
+  if(!canApproveTaskOf(t, me)){ toast('⛔ Chỉ cấp QUẢN LÝ được duyệt tiến độ công việc này','error'); return; }
   t.pendingProgress = null;
   saveDB(db);
   renderPopupBody?.();
@@ -5231,6 +6165,15 @@ function getImportedQty(contractId, materialId){
 function canApprove(){
   const u=currentUser();
   return u && (u.role==='admin' || u.role==='manager' || u.role==='pm');
+}
+/* [YC5] Quyền duyệt (tiến độ/hoàn thành) đối với 1 công việc cụ thể:
+   - Việc TỰ GIAO (selfAssigned): NV tạo việc KHÔNG được tự duyệt — chỉ admin/pm/manager.
+   - Việc thường: admin, hoặc người giao việc với điều kiện không phải employee. */
+function canApproveTaskOf(t, me){
+  if(!me || !t) return false;
+  if(me.role==='admin') return true;
+  if(t.selfAssigned) return (me.role==='pm' || me.role==='manager');
+  return t.createdBy===me.id && me.role!=='employee';
 }
 /* Phân quyền theo dự án: được duyệt nếu là admin/manager/pm toàn cục
    HOẶC được gán làm Quản lý dự án (c.projectManagers) cho DA đó */
@@ -5799,7 +6742,7 @@ function renderPopupMaterials(host, cid){
   const materials = c.materials||[];
   const rows = materials.map((m,i)=>{
     const imported = getImportedQty(cid, m.id);
-    const remaining = (Number(m.qtyContract)||0) - imported;
+    const remaining = round2((Number(m.qtyContract)||0) - imported); // [YC6] làm tròn 2 số thập phân
     let totQ=0,totV=0,lastSup='';
     db.importSlips.filter(s=>s.contractId===cid).forEach(s=>{
       (s.items||[]).forEach(it=>{
@@ -6218,7 +7161,7 @@ window.showContractDetail = function(contractId){
   const materials = (c.materials||[]);
   const matRows = materials.length ? materials.map((m,i)=>{
     const imported = getImportedQty(c.id, m.id);
-    const remaining = (Number(m.qtyContract)||0) - imported;
+    const remaining = round2((Number(m.qtyContract)||0) - imported); // [YC6] làm tròn 2 số thập phân
     return `<tr>
       <td>${i+1}</td>
       <td>${escapeHtml(m.name)}</td>
@@ -6354,7 +7297,7 @@ window.exportContractExcel = function(cid){
   const matRows = [['STT','Tên vật tư','ĐVT','SL HĐ','SL đã nhập','SL còn lại','Đơn giá HĐ']];
   (c.materials||[]).forEach((m,i)=>{
     const imported = getImportedQty(c.id, m.id);
-    matRows.push([i+1, m.name, m.unit||'', m.qtyContract||0, imported, (m.qtyContract||0)-imported, m.unitPriceContract||0]);
+    matRows.push([i+1, m.name, m.unit||'', m.qtyContract||0, imported, round2((m.qtyContract||0)-imported), m.unitPriceContract||0]); // [YC6]
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(matRows), 'Phụ lục vật tư');
   XLSX.writeFile(wb, `HopDong_${(c.code||c.id).replace(/[^a-z0-9_-]/gi,'_')}.xlsx`);
@@ -6395,7 +7338,7 @@ window.exportContractWord = function(cid){
   <h3>PHỤ LỤC VẬT TƯ</h3>
   <table>
     <tr><th>STT</th><th>Tên vật tư</th><th>ĐVT</th><th>SL HĐ</th><th>SL đã nhập</th><th>SL còn lại</th><th>Đơn giá HĐ</th></tr>
-    ${(c.materials||[]).map((m,i)=>{const imp=getImportedQty(c.id,m.id); return `<tr><td>${i+1}</td><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.unit||'')}</td><td>${m.qtyContract||0}</td><td>${imp}</td><td>${(m.qtyContract||0)-imp}</td><td>${fmtVND(m.unitPriceContract||0)}</td></tr>`}).join('')}
+    ${(c.materials||[]).map((m,i)=>{const imp=getImportedQty(c.id,m.id); return `<tr><td>${i+1}</td><td>${escapeHtml(m.name)}</td><td>${escapeHtml(m.unit||'')}</td><td>${m.qtyContract||0}</td><td>${imp}</td><td>${round2((m.qtyContract||0)-imp)}</td><td>${fmtVND(m.unitPriceContract||0)}</td></tr>`}).join('')}
   </table>
   ${c.note?`<h3>GHI CHÚ</h3><p>${escapeHtml(c.note)}</p>`:''}
   </body></html>`;
@@ -7327,7 +8270,7 @@ window.openContractMaterialsModal = function(cid){
   // Bảng vật tư với cảnh báo
   const matRows = materials.map((m,i)=>{
     const imported = getImportedQty(cid, m.id);
-    const remaining = (Number(m.qtyContract)||0) - imported;
+    const remaining = round2((Number(m.qtyContract)||0) - imported); // [YC6] làm tròn 2 số thập phân
     // Đơn giá nhập trung bình (weighted)
     let totalQty=0, totalVal=0, lastSupplier='';
     db.importSlips.filter(s=>s.contractId===cid).forEach(s=>{
