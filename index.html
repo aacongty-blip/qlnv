@@ -683,6 +683,8 @@ function migrateDB(db){
   if(db.settings.lateGraceMins==null) db.settings.lateGraceMins = 0; // số phút cho phép trễ không bị tính là muộn
   // [PATCH] Cấu hình riêng cho từng công ty — null = dùng cấu hình chung
   if(!db.settings.companyWorkHours) db.settings.companyWorkHours = {};
+  // [CC4] Danh sách người được Admin chỉ định quyền duyệt chấm công
+  if(!Array.isArray(db.settings.attendanceApprovers)) db.settings.attendanceApprovers = [];
   db.users.forEach(u=>{
     if(u.role==='admin') return;
     if(!Array.isArray(u.assignments)){
@@ -1143,7 +1145,7 @@ function renderNav(u){
   if(u.role==='admin'){
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
     items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
-    items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
+    items.push({k:'contracts', t:'Quản lý dự án Thi công', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
     items.push({k:'users', t:'Quản lý nhân sự', i:'👥'});
     items.push({k:'salary', t:'Cấu hình lương', i:'💰'});
@@ -1156,7 +1158,7 @@ function renderNav(u){
     // Quản lý — quyền rộng (gần như Admin, trừ Sao lưu & Cài đặt hệ thống)
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
     items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
-    items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
+    items.push({k:'contracts', t:'Quản lý dự án Thi công', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
     items.push({k:'users', t:'Quản lý nhân sự', i:'👥'});
     items.push({k:'salary', t:'Cấu hình lương', i:'💰'});
@@ -1167,12 +1169,12 @@ function renderNav(u){
     // Trưởng phòng — Theo dõi công việc (giao việc), CÔNG VIỆC CỦA TÔI, Quản lý dự án, Chấm công
     items.push({k:'tasks', t:'Theo dõi công việc', i:'📋'});
     items.push({k:'my-tasks', t:'Công việc của tôi', i:'✅'});
-    items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
+    items.push({k:'contracts', t:'Quản lý dự án Thi công', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
     items.push({k:'kpi-config', t:'Cấu hình KPI', i:'⚙️'}); // [YC2]
   }else if(u.role==='employee'){
     items.push({k:'my-tasks', t:'Theo dõi công việc', i:'📋'});
-    items.push({k:'contracts', t:'Quản lý dự án', i:'🏗'});
+    items.push({k:'contracts', t:'Quản lý dự án Thi công', i:'🏗'});
     items.push({k:'dashboard', t:'Chấm công', i:'🕐'});
     items.push({k:'my-info', t:'Thông tin cá nhân', i:'👤'});
     items.push({k:'my-kpi', t:'KPI của tôi', i:'🎯'});
@@ -1244,6 +1246,7 @@ function viewPCCCDesign(main, u){
       <h1>🏗️ Quản lý Thiết kế PCCC ${isEmployee?'<span class="muted" style="font-size:12px;font-weight:400">— Chế độ theo dõi</span>':''}</h1>
       <div class="actions">
         ${isEmployee?'':'<button class="btn success" onclick="openContractForm()">+ Thêm dự án PCCC</button>'}
+        ${isEmployee?'':'<button class="btn" style="background:#0f766e" onclick="openImportProjectDialog()" title="Nhập dự án từ file JSON đã export bằng nút 📤 trên từng dự án">📥 Import dự án</button>'}
         ${isEmployee?'':'<button class="btn outline" title="Nhập dự án từ file JSON (xuất từ phần mềm Quản lý thiết kế PCCC)" onclick="document.getElementById(\'pcccJsonInput\').click()">📥 Nhập từ file JSON</button>'}
         ${isEmployee?'':'<button class="btn outline" title="Nhập dữ liệu từ mô-đun PCCC cũ (lưu trong localStorage của trình duyệt)" onclick="migratePCCCData()">⬇ Nhập dữ liệu PCCC cũ</button>'}
         <input type="file" id="pcccJsonInput" accept=".json,application/json" style="display:none" onchange="importPCCCJson(this)">
@@ -1256,7 +1259,7 @@ function viewPCCCDesign(main, u){
       <button class="tab ${_pcccSubTab==='dashboard'?'active':''}" onclick="switchPCCCTab('dashboard')">📊 Dashboard</button>
       ${isEmployee?'':`<button class="tab ${_pcccSubTab==='input'?'active':''}" onclick="switchPCCCTab('input')">🏗️ Dự án</button>`}
     </div>
-    <div class="help-text">💡 Mô-đun Thiết kế PCCC dùng <b>chung dữ liệu dự án và nhân sự</b> với mục Quản lý dự án. <b>Double-click</b> vào 1 dự án để mở cửa sổ chi tiết (có thể đổi kích thước) với đủ 6 tab: Tiến độ, Thông tin &amp; HĐ, Hồ sơ dự án, Vật tư, Bảo lãnh, Hồ sơ thanh toán.</div>
+    <div class="help-text">💡 Mô-đun Thiết kế PCCC dùng <b>chung dữ liệu dự án và nhân sự</b> với mục Quản lý dự án Thi công. Nút <b>↔</b> trên từng dòng dự án để <b>chuyển dự án sang sheet Thi công</b> (và ngược lại) — giữ nguyên toàn bộ dữ liệu. <b>Double-click</b> vào 1 dự án để mở cửa sổ chi tiết (có thể đổi kích thước) với đủ 6 tab: Tiến độ, Thông tin &amp; HĐ, Hồ sơ dự án, Vật tư, Bảo lãnh, Hồ sơ thanh toán.</div>
     <div id="contract-body"></div>
   `;
   renderContractTabBody();
@@ -1602,13 +1605,16 @@ function renderLogin(){
 /* ============================================================
    DASHBOARD
    ============================================================ */
+let _attPeriod=null; // [CC1] tháng đang xem ở trang Chấm công (null = tháng hiện tại)
+window.setAttPeriod=function(v){ _attPeriod=v||null; navTo('dashboard'); };
 function viewDashboard(main, u){
   const db=getDB();
-  const period=thisPeriod();
+  const period=_attPeriod||thisPeriod(); // [CC1] cho phép xem lại tháng cũ
   // [YC3] Bảng chấm công hiển thị TOÀN BỘ nhân sự tổng hợp từ CẢ 3 CÔNG TY
   //       (admin/pm/manager xem tất cả; employee chỉ xem dòng của mình)
   let users = db.users.filter(x=>x.role!=='admin');
-  if(u.role==='employee') users = users.filter(x=>x.id===u.id);
+  // [CC4] NV được chỉ định quyền duyệt chấm công sẽ thấy TOÀN BỘ bảng công 3 công ty
+  if(u.role==='employee' && !canApproveAttendance()) users = users.filter(x=>x.id===u.id);
   // Sắp xếp theo công ty rồi theo tên cho dễ theo dõi
   users.sort((a,b)=>{
     const ca=getCompany(a.companyId).code||'', cb=getCompany(b.companyId).code||'';
@@ -1664,11 +1670,16 @@ function viewDashboard(main, u){
     Object.values(rec).forEach(v=>{
       // Cấu trúc mới: {code, ot, pendingCheckIn}; cấu trúc cũ: chỉ là string code
       let code, ot, pending=false;
-      if(typeof v==='object' && v!==null){ code = v.code; ot = Number(v.ot)||0; pending = !!v.pendingCheckIn; }
+      if(typeof v==='object' && v!==null){
+        code = v.code; ot = Number(v.ot)||0; pending = !!v.pendingCheckIn;
+        // [CC2] Muộn quá 60 phút mà KHÔNG có lý do được duyệt → chỉ tính NỬA công
+        if(code==='P' && v.late && Number(v.lateMins)>60 && !v.lateExcused) code='H';
+      }
       else { code = v; ot = 0; }
       // [PATCH] Chấm công NV chờ duyệt không tính vào tổng công
       if(pending) return;
       if(code==='P') full++; else if(code==='H') half++; else if(code==='O') leave++;
+      // [CC3] 'K' = nghỉ KHÔNG phép → 0 công, không cộng bucket nào
       otHours += ot;
     });
     return {full, half, leave, otHours, totalDays: full + 0.5*half + 0*leave};
@@ -1702,7 +1713,7 @@ function viewDashboard(main, u){
         <td class="right">${fmtVND(sal.baseAdjusted)}</td>
         <td class="right">${fmtVND(Math.round(sal.totalKpiActual))}</td>
         <td class="right"><b style="color:#1e3a8a">${fmtVND(Math.round(sal.finalTotal))}</b></td>` : ''}
-      <td>${u.role==='employee'
+      <td>${(!canApproveAttendance())
           ? `<button class="btn sm outline" onclick="event.stopPropagation();openAttendanceGrid('${emp.id}','${period}')">👁 Xem</button>`
           : `<button class="btn sm" onclick="event.stopPropagation();openAttendanceGrid('${emp.id}','${period}')">📅 Chấm</button>`}</td>
     </tr>`;
@@ -1710,19 +1721,20 @@ function viewDashboard(main, u){
 
   // [PATCH] Card tự chấm công cho NV + danh sách chờ duyệt cho cấp quản lý
   const selfCheckInHtml = (u.role==='employee') ? renderSelfCheckInCard(u, db) : '';
-  const pendingApprovalHtml = (u.role!=='employee') ? renderAttendancePendingList(u, db) : '';
+  const pendingApprovalHtml = canApproveAttendance() ? renderAttendancePendingList(u, db) : ''; // [PQ2] chỉ người được phân quyền (và admin) thấy thẻ duyệt
 
   main.innerHTML=`
     ${renderHomeAlerts(u, db)}
     <div class="page-head">
       <h1>🕐 Chấm công · ${fmtPeriod(period)}</h1>
       <div class="actions">
-        <input type="month" id="att-period" value="${period}" onchange="navTo('dashboard')" style="width:auto">
+        <input type="month" id="att-period" value="${period}" onchange="setAttPeriod(this.value)" style="width:auto" title="Chọn tháng muốn xem lại — toàn bộ bảng công, lương và danh sách chờ duyệt sẽ hiển thị theo tháng này">
         <button class="btn" onclick="exportAttendanceExcel()">📊 Xuất Excel lương + chấm công</button>
         <button class="btn outline" onclick="navTo('reports')">📑 Báo cáo lương</button>
       </div>
     </div>
-    <div class="help-text">📅 <b>Chấm công tháng:</b> bấm "📅 Chấm" để mở lưới chấm công cho từng NV. Quy ước: <b>P</b> = công đủ ngày · <b>H</b> = nửa ngày · <b>O</b> = nghỉ phép có lương · <b>(trống)</b> = vắng/CN/ngày nghỉ. <b>Lương cuối tháng</b> = (Lương cứng + Hỗ trợ) × Tỷ lệ công + Σ Thưởng KPI từng mảng.</div>
+    ${u.role!=='employee'?`<div class="help-text" style="background:#eef2ff;border-color:#c7d2fe">🟢🔴 <b>Quy trình chấm công của nhân viên:</b> NV đăng nhập sẽ thấy thẻ "Tự chấm công" với các nút <b>Chấm giờ vào</b>, <b>🔴 Chấm giờ VỀ</b> (giờ làm = giờ về − giờ vào − 1,5h nghỉ trưa), <b>🌴 Xin nghỉ</b> (duyệt → O có phép; từ chối → K không phép, tính KPI), <b>Đăng ký tăng ca</b> (kèm lý do) và <b>Trình bày lý do đến muộn</b> (muộn &lt;1h: xác nhận đi muộn; muộn &gt;1h: chỉ tính ½ công nếu không được duyệt lý do). Người được phân quyền duyệt sẽ thấy các thẻ chờ duyệt tương ứng bên dưới; NV quên chấm giờ về hiện ở thẻ 🚨 và bị trừ 1 điểm thái độ/ngày. Rê chuột vào ô trong lưới chấm công để xem <b>tên người phê duyệt từng mục</b>.</div>`:''}
+    <div class="help-text">📅 <b>Chấm công tháng:</b> bấm "📅 Chấm" để mở lưới chấm công cho từng NV. Quy ước: <b>P</b> = công đủ ngày · <b>H</b> = nửa ngày · <b>O</b> = nghỉ CÓ phép · <b style="color:#dc2626">K</b> = nghỉ KHÔNG phép (tính vào KPI Ý thức) · <b>(trống)</b> = vắng/CN/ngày nghỉ. Muộn quá 1 tiếng không có lý do được duyệt → ngày đó chỉ tính <b>½ công</b>. <b>Lương cuối tháng</b> = (Lương cứng + Hỗ trợ) × Tỷ lệ công + Σ Thưởng KPI từng mảng.</div>
     ${selfCheckInHtml}
     ${pendingApprovalHtml}
     <div class="stat-grid">
@@ -1765,11 +1777,11 @@ window.openAttendanceGrid = function(empId, period){
   if(!db.attendance[empId]) db.attendance[empId]={};
   const rec = db.attendance[empId][period] = (db.attendance[empId][period] || {});
   const me = currentUser();
-  const isReadOnly = me && me.role==='employee';
+  const isReadOnly = me && !canApproveAttendance(); // [PQ2] chỉ Admin + người được chỉ định mới chấm/sửa được lưới
   const dayNames = ['CN','T2','T3','T4','T5','T6','T7'];
   const helpText = isReadOnly
     ? `<div class="help-text">👁 <b>Chế độ chỉ xem.</b> Nhân viên không có quyền tự chấm công — chỉ Trưởng phòng / Quản lý / Admin được phép chấm. Bảng dưới hiển thị công đã chấm cho bạn trong tháng.</div>`
-    : `<div class="help-text"><b>Click</b> vào ô để chuyển trạng thái: trống → P (công đủ) → H (nửa ngày) → O (phép có lương) → trống.</div>`;
+    : `<div class="help-text"><b>Click</b> vào ô để chuyển trạng thái: trống → <b>P</b> (công đủ) → <b>H</b> (nửa ngày) → <b>O</b> (nghỉ CÓ phép) → <b style="color:#dc2626">K</b> (nghỉ KHÔNG phép) → trống. Mã K là căn cứ tự động chấm KPI Ý thức "nghỉ không phép". 👤 <b>Rê chuột vào ô</b> để xem lưu vết: giờ vào/về, tăng ca, đơn nghỉ, lý do muộn và <b>TÊN NGƯỜI PHÊ DUYỆT</b> từng mục (thông tin này chỉ người được phân quyền duyệt và Admin nhìn thấy).</div>`;
   let html = `${helpText}
     <div style="display:grid;grid-template-columns:repeat(7, 1fr);gap:4px;font-size:11px;font-weight:600;text-align:center;margin-bottom:4px">
       ${dayNames.map(d=>`<div style="padding:4px;background:#1e3a8a;color:#fff;border-radius:4px">${d}</div>`).join('')}
@@ -1789,6 +1801,30 @@ window.openAttendanceGrid = function(empId, period){
     onShown:()=>renderAttGrid(empId, period, isReadOnly)
   });
 };
+/* [AUDIT] Chuỗi lưu vết người phê duyệt từng mục chấm công của 1 ngày.
+   CHỈ hiển thị cho người được phân quyền duyệt chấm công + Admin (tooltip trên lưới). */
+function _attAuditText(cellRec, db){
+  if(!cellRec || typeof cellRec!=='object') return '';
+  const nameOf=id=>{ const x=(db.users||[]).find(u=>u.id===id); return x?x.name:'(không rõ)'; };
+  const parts=[];
+  if(cellRec.checkIn) parts.push('GIỜ VÀO '+fmtDateTime(cellRec.checkIn)+(cellRec.pendingCheckIn?' [⏳ chờ duyệt]':(cellRec.confirmedBy?' [✓ duyệt: '+nameOf(cellRec.confirmedBy)+']':'')));
+  if(cellRec.checkOut) parts.push('GIỜ VỀ '+fmtDateTime(cellRec.checkOut)+' → '+(cellRec.workedHours||0)+'h làm việc'+(cellRec.pendingCheckOut?' [⏳ chờ duyệt]':(cellRec.checkOutConfirmedBy?' [✓ duyệt: '+nameOf(cellRec.checkOutConfirmedBy)+']':'')));
+  if(cellRec.otReq){
+    const st=cellRec.otReq.status;
+    parts.push('TĂNG CA '+(cellRec.otReq.hours||cellRec.ot||0)+'h — '+escapeHtml(cellRec.otReq.note||'')+(st==='pending'?' [⏳ chờ duyệt]':(st==='approved'?' [✓ duyệt: '+nameOf(cellRec.otReq.decidedBy)+']':' [✗ từ chối: '+nameOf(cellRec.otReq.decidedBy)+']')));
+  } else if(cellRec.ot){
+    parts.push('TĂNG CA '+cellRec.ot+'h'+(cellRec.otBy?' [nhập bởi: '+nameOf(cellRec.otBy)+']':' [người chấm công nhập trực tiếp]'));
+  }
+  if(cellRec.lateReason){
+    const st=cellRec.lateReason.status;
+    parts.push('LÝ DO MUỘN: "'+escapeHtml(cellRec.lateReason.text||'')+'"'+(st==='pending'?' [⏳ chờ duyệt]':(st==='approved'?' [✓ chấp thuận: '+nameOf(cellRec.lateReason.decidedBy)+']':' [✗ từ chối: '+nameOf(cellRec.lateReason.decidedBy)+']')));
+  }
+  if(cellRec.leaveReq){
+    const st=cellRec.leaveReq.status;
+    parts.push('ĐƠN NGHỈ: "'+escapeHtml(cellRec.leaveReq.reason||'')+'"'+(st==='pending'?' [⏳ chờ duyệt]':(st==='approved'?' [✓ CÓ PHÉP — duyệt: '+nameOf(cellRec.leaveReq.decidedBy)+']':' [✗ KHÔNG PHÉP — quyết định: '+nameOf(cellRec.leaveReq.decidedBy)+']')));
+  }
+  return parts.join('  •  ');
+}
 function renderAttGrid(empId, period, isReadOnly){
   const db = getDB();
   const [yy,mm] = period.split('-').map(Number);
@@ -1796,11 +1832,17 @@ function renderAttGrid(empId, period, isReadOnly){
   const firstDow = new Date(yy, mm-1, 1).getDay(); // 0=CN
   const rec = (db.attendance[empId] && db.attendance[empId][period]) || {};
   const wrap = document.getElementById('att-grid'); if(!wrap) return;
-  if(isReadOnly===undefined) isReadOnly = currentUser()?.role==='employee';
+  if(isReadOnly===undefined) isReadOnly = !canApproveAttendance();
   let cells = '';
   function _getCellInfo(v){
-    if(typeof v==='object' && v!==null) return {code:v.code||'', ot:Number(v.ot)||0};
-    return {code:v||'', ot:0};
+    if(typeof v==='object' && v!==null){
+      let code=v.code||'';
+      // [CC2] Muộn >60' không có lý do được duyệt → hiển thị & tính như H (nửa công)
+      const halfLate = code==='P' && v.late && Number(v.lateMins)>60 && !v.lateExcused;
+      if(halfLate) code='H';
+      return {code, ot:Number(v.ot)||0, halfLate};
+    }
+    return {code:v||'', ot:0, halfLate:false};
   }
   // Pad start
   for(let i=0;i<firstDow;i++) cells += '<div></div>';
@@ -1813,8 +1855,8 @@ function renderAttGrid(empId, period, isReadOnly){
     const cellRec = rec[d] && typeof rec[d]==='object' ? rec[d] : null;
     const isPending = cellRec && cellRec.pendingCheckIn;
     const isLate = cellRec && cellRec.late;
-    const colors = {'P':'#16a34a', 'H':'#f59e0b', 'O':'#3b82f6', '':'#f1f5f9'};
-    let bg = colors[v];
+    const colors = {'P':'#16a34a', 'H':'#f59e0b', 'O':'#3b82f6', 'K':'#dc2626', '':'#f1f5f9'};
+    let bg = colors[v] || '#f1f5f9';
     let border = '1px solid #cbd5e1';
     let badge = '';
     if(isPending){
@@ -1822,12 +1864,16 @@ function renderAttGrid(empId, period, isReadOnly){
       border = '2px dashed #f59e0b';
       badge = '<div style="font-size:9px;margin-top:1px;color:#92400e;font-weight:700">⏳ chờ duyệt</div>';
     } else if(isLate){
-      badge = '<div style="font-size:9px;margin-top:1px;color:#fff;background:rgba(220,38,38,.7);border-radius:3px;padding:0 3px">⚠ muộn '+(cellRec.lateMins||0)+'\'</div>';
+      const excused = cellRec.lateExcused;
+      badge = excused
+        ? '<div style="font-size:9px;margin-top:1px;color:#166534;background:rgba(220,252,231,.9);border-radius:3px;padding:0 3px">✓ muộn có lý do</div>'
+        : '<div style="font-size:9px;margin-top:1px;color:#fff;background:rgba(220,38,38,.7);border-radius:3px;padding:0 3px">⚠ muộn '+(cellRec.lateMins||0)+'\''+(info.halfLate?' → ½ công':'')+'</div>';
     }
     const clickHandler = isReadOnly ? '' : `onclick="cycleAttDay('${empId}','${period}',${d})"`;
     const cursor = isReadOnly ? 'default' : 'pointer';
     const textColor = isPending ? '#92400e' : (v ? '#fff' : '#0f172a');
-    cells += `<div style="padding:6px 4px;border:${border};border-radius:6px;background:${bg};color:${textColor};font-weight:${v?700:400};${isSun?'opacity:.5':''}${isReadOnly?';opacity:.85':''};text-align:center">
+    const auditTitle = (!isReadOnly && cellRec) ? _attAuditText(cellRec, db) : '';
+    cells += `<div ${auditTitle?`title="${escapeHtml(auditTitle)}"`:''} style="padding:6px 4px;border:${border};border-radius:6px;background:${bg};color:${textColor};font-weight:${v?700:400};${isSun?'opacity:.5':''}${isReadOnly?';opacity:.85':''};text-align:center">
       <button ${clickHandler} ${isReadOnly?'disabled':''} style="background:none;border:none;color:inherit;cursor:${cursor};width:100%;font-weight:inherit">
         <div style="font-size:14px">${d}</div>
         <div style="font-size:11px">${v||'—'}</div>
@@ -1838,33 +1884,35 @@ function renderAttGrid(empId, period, isReadOnly){
   }
   wrap.innerHTML = cells;
   // Summary
-  let p=0,h=0,o=0,totalOT=0;
+  let p=0,h=0,o=0,k=0,totalOT=0;
   Object.values(rec).forEach(v=>{
     const info = _getCellInfo(v);
-    if(info.code==='P')p++; else if(info.code==='H')h++; else if(info.code==='O')o++;
+    if(info.code==='P')p++; else if(info.code==='H')h++; else if(info.code==='O')o++; else if(info.code==='K')k++;
     totalOT += info.ot;
   });
   const total = p + 0.5*h;
   const wd = countWorkingDays(yy, mm);
   const ratio = wd>0 ? (total/wd*100) : 0;
   document.getElementById('att-summary').innerHTML = `
-    <b>Tổng công:</b> P=${p} ngày · H=${h} nửa ngày · O=${o} phép ·
+    <b>Tổng công:</b> P=${p} ngày · H=${h} nửa ngày · O=${o} phép · <b style="color:#dc2626">K=${k} nghỉ không phép</b> ·
     <b style="color:#f59e0b">Tăng ca: ${totalOT}h</b> ·
     <b>Quy đổi: ${total} công</b> / ${wd} ngày làm việc → <b>${ratio.toFixed(1)}%</b>
+    <div class="hint" style="margin-top:4px">💡 Ngày có nhãn "⚠ muộn → ½ công": nhân viên đến muộn quá 1 tiếng không có lý do được duyệt nên chỉ tính nửa công. Duyệt lý do đi muộn ở trang Chấm công sẽ tự trả lại công đủ.</div>
   `;
 }
 window.updateAttOT = function(empId, period, d, value){
-  if(!canApprove()){ toast('NV không có quyền nhập tăng ca','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền nhập tăng ca','error'); return; }
   const db=getDB();
   if(!db.attendance[empId]) db.attendance[empId]={};
   if(!db.attendance[empId][period]) db.attendance[empId][period]={};
   const cur = db.attendance[empId][period][d];
-  let code='';
-  if(typeof cur==='object' && cur!==null) code = cur.code||'';
-  else code = cur||'';
-  const ot = Math.max(0, Number(value)||0);
-  if(code || ot){
-    db.attendance[empId][period][d] = {code, ot};
+  // [FIX] GIỮ NGUYÊN các trường khác (giờ vào, muộn, lý do, đăng ký OT…) khi sửa giờ OT
+  let base = (typeof cur==='object' && cur!==null) ? {...cur} : (cur ? {code:cur} : {code:''});
+  base.ot = Math.max(0, Number(value)||0);
+  base.otBy = currentUser()?.id; // [AUDIT] lưu người nhập OT trực tiếp
+  const hasOther = base.code || base.checkIn || base.otReq || base.lateReason || base.pendingCheckIn;
+  if(base.ot || hasOther){
+    db.attendance[empId][period][d] = base;
   } else {
     delete db.attendance[empId][period][d];
   }
@@ -1872,20 +1920,20 @@ window.updateAttOT = function(empId, period, d, value){
   renderAttGrid(empId, period);
 };
 window.cycleAttDay = function(empId, period, d){
-  if(!canApprove()){ toast('NV không có quyền chấm công','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền chấm công','error'); return; }
   const db=getDB();
   if(!db.attendance[empId]) db.attendance[empId]={};
   if(!db.attendance[empId][period]) db.attendance[empId][period]={};
   const cur = db.attendance[empId][period][d];
-  let curCode = '';
-  let curOT = 0;
-  if(typeof cur==='object' && cur!==null){ curCode = cur.code||''; curOT = Number(cur.ot)||0; }
-  else { curCode = cur||''; }
-  const next = {'':'P','P':'H','H':'O','O':''}[curCode];
-  if(next || curOT>0){
-    db.attendance[empId][period][d] = {code: next||'', ot: curOT};
-    // Nếu không có code lẫn OT thì xóa hoàn toàn
-    if(!next && !curOT) delete db.attendance[empId][period][d];
+  // [FIX] GIỮ NGUYÊN các trường khác (giờ vào, muộn, OT, đăng ký OT, lý do…) khi đổi mã công
+  let base = (typeof cur==='object' && cur!==null) ? {...cur} : (cur ? {code:cur, ot:0} : {code:'', ot:0});
+  const curCode = base.code||'';
+  // [CC3] Chu trình: trống → P → H → O (phép) → K (nghỉ KHÔNG phép) → trống
+  const next = {'':'P','P':'H','H':'O','O':'K','K':''}[curCode] ?? 'P';
+  base.code = next||'';
+  const hasOther = (Number(base.ot)||0)>0 || base.checkIn || base.otReq || base.lateReason;
+  if(base.code || hasOther){
+    db.attendance[empId][period][d] = base;
   } else {
     delete db.attendance[empId][period][d];
   }
@@ -1893,7 +1941,7 @@ window.cycleAttDay = function(empId, period, d){
   renderAttGrid(empId, period);
 };
 window.markAllWeekdays = function(empId, period, code){
-  if(!canApprove()){ toast('NV không có quyền chấm công','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền chấm công','error'); return; }
   const db=getDB();
   const [yy,mm] = period.split('-').map(Number);
   const dim = new Date(yy, mm, 0).getDate();
@@ -1906,7 +1954,7 @@ window.markAllWeekdays = function(empId, period, code){
   toast(`Đã đánh dấu "${code}" cho tất cả ngày làm việc`);
 };
 window.clearAttendance = function(empId, period){
-  if(!canApprove()){ toast('NV không có quyền chấm công','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền chấm công','error'); return; }
   if(!confirm('Xóa toàn bộ chấm công tháng này?')) return;
   const db=getDB();
   if(db.attendance[empId]) delete db.attendance[empId][period];
@@ -1928,7 +1976,7 @@ function _setAttRec(db, empId, period, day, rec){
   if(!db.attendance) db.attendance={};
   if(!db.attendance[empId]) db.attendance[empId]={};
   if(!db.attendance[empId][period]) db.attendance[empId][period]={};
-  if(!rec || (!rec.code && !rec.ot && !rec.pendingCheckIn && !rec.otReq)){
+  if(!rec || (!rec.code && !rec.ot && !rec.pendingCheckIn && !rec.otReq && !rec.leaveReq && !rec.checkIn)){
     delete db.attendance[empId][period][day];
   } else {
     db.attendance[empId][period][day] = rec;
@@ -2008,15 +2056,297 @@ function renderSelfCheckInCard(u, db){
         </div>
       </div>`;
   }
+  // [CC2] TRÌNH BÀY LÝ DO ĐẾN MUỘN — nếu QL chấp thuận thì hôm đó KHÔNG tính muộn
+  let lateHtml='';
+  // [FIX-HT] Khối "lý do đến muộn" hiển thị Ở MỌI TRẠNG THÁI để NV luôn biết có chức năng này
+  if(!rec || !rec.checkIn){
+    // Chưa chấm giờ vào hôm nay
+    lateHtml = `<div style="margin-top:8px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:8px 10px;font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>📝 <b>Trình bày lý do đến muộn:</b> sẽ mở khi hệ thống ghi nhận bạn đi muộn lúc chấm giờ vào. Muộn <b>&lt;1 tiếng</b>: bị xác nhận đi muộn (tính KPI) trừ khi lý do được duyệt. Muộn <b>&gt;1 tiếng</b>: chỉ tính <b>½ ngày công</b> nếu lý do không được duyệt.</div>
+      <button class="btn" disabled style="opacity:.45;cursor:not-allowed">📝 Trình bày lý do</button>
+    </div>`;
+  } else if(rec.checkIn && !rec.late){
+    // Đã chấm giờ vào, đúng giờ
+    lateHtml = `<div style="margin-top:8px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px 10px;font-size:13px">
+      📝 ✓ Hôm nay bạn đến <b>ĐÚNG GIỜ</b> — không cần trình bày lý do đến muộn.</div>`;
+  }
+  if(rec && rec.late){
+    const lr = rec.lateReason;
+    const over60 = Number(rec.lateMins)>60;
+    if(rec.lateExcused){
+      lateHtml = `<div style="margin-top:8px;background:#dcfce7;border:1px solid #86efac;border-radius:8px;padding:8px 10px;font-size:13px">
+        ✓ <b>Lý do đến muộn đã được chấp thuận</b> — hôm nay KHÔNG bị tính đi muộn.${lr?.text?` <span class="muted">(${escapeHtml(lr.text)})</span>`:''}</div>`;
+    } else if(lr && lr.status==='pending'){
+      lateHtml = `<div style="margin-top:8px;background:#fef3c7;border:1px solid #fde047;border-radius:8px;padding:8px 10px;font-size:13px">
+        ⏳ <b>Lý do đến muộn đang chờ Quản lý duyệt:</b> "${escapeHtml(lr.text||'')}"</div>`;
+    } else {
+      lateHtml = `<div style="margin-top:8px;background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:8px 10px;font-size:13px">
+        ${lr&&lr.status==='rejected'?`<div style="color:#991b1b">✗ Lý do trước đã bị từ chối${lr.decisionNote?': '+escapeHtml(lr.decisionNote):''}.</div>`:''}
+        ⚠ Bạn đi muộn <b>${rec.lateMins||0} phút</b>.${over60?' <b style="color:#991b1b">Muộn quá 1 tiếng — nếu không có lý do được duyệt, hôm nay chỉ tính ½ ngày công.</b>':''}
+        <div style="margin-top:6px"><button class="btn sm warn" onclick="openLateReasonForm()">📝 Trình bày lý do đến muộn</button></div>
+      </div>`;
+    }
+  }
+  // [CO] CHẤM GIỜ VỀ — NV chấm khi ra về; phần mềm tính số giờ làm, cảnh báo nếu < 8 tiếng
+  let coHtml='';
+  if(!rec || (!rec.checkIn && !rec.code)){
+    // Chưa chấm giờ vào → hiện sẵn nút giờ về ở trạng thái KHÓA để NV biết có chức năng này
+    coHtml = `<div style="margin-top:8px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:8px 10px;font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div>🔴 <b>Chấm giờ về:</b> sẽ mở sau khi bạn <b>chấm giờ vào</b> đầu ngày. Giờ làm việc = <b>Giờ về − Giờ vào − 1,5h nghỉ trưa</b> (chuẩn ≥ 8 tiếng) — dùng để chấm KPI.
+      <div class="hint" style="color:#991b1b">⚠ Ra về không chấm giờ về: sau 0h00 hôm sau bị TRỪ 1 điểm thái độ.</div></div>
+      <button class="btn" disabled style="padding:12px 22px;font-size:15px;opacity:.45;cursor:not-allowed">🔴 Chấm giờ VỀ</button>
+    </div>`;
+  } else if(rec && !rec.checkIn && rec.code){
+    // Công do Quản lý chấm trực tiếp (không có giờ vào) → không cần chấm giờ về
+    coHtml = `<div style="margin-top:8px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:13px">
+      🔴 <b>Chấm giờ về:</b> hôm nay công của bạn do Quản lý chấm trực tiếp (không ghi giờ vào) nên không cần chấm giờ về.</div>`;
+  }
+  if(rec && rec.checkIn){
+    if(!rec.checkOut){
+      coHtml = `<div style="margin-top:8px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:8px;padding:8px 10px;font-size:13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>🔴 <b>Khi ra về, hãy chấm giờ về.</b> Giờ làm việc = <b>Giờ về − Giờ vào − 1,5h nghỉ trưa</b> (chuẩn ≥ 8 tiếng) — dùng để chấm KPI.
+        <div class="hint" style="color:#991b1b">⚠ Quên chấm giờ về: sau 0h00 hôm sau sẽ bị TRỪ 1 điểm thái độ (mục "Phối hợp đồng nghiệp, thái độ làm việc").</div></div>
+        <button class="btn danger" style="padding:12px 22px;font-size:15px" onclick="selfCheckOut()">🔴 Chấm giờ VỀ</button>
+      </div>`;
+    } else {
+      const hrs=Number(rec.workedHours)||0;
+      const enough = hrs>=8;
+      coHtml = `<div style="margin-top:8px;background:${enough?'#dcfce7':'#fef3c7'};border:1px solid ${enough?'#86efac':'#fde047'};border-radius:8px;padding:8px 10px;font-size:13px">
+        🔴 Đã chấm giờ về lúc <b>${fmtDateTime(rec.checkOut)}</b> — làm việc <b>${hrs}h</b>
+        ${enough?'<span class="badge" style="background:#dcfce7;color:#166534">✓ Đủ 8 tiếng</span>':'<span class="badge" style="background:#fee2e2;color:#991b1b">⚠ CHƯA đủ 8 tiếng</span>'}
+        ${rec.pendingCheckOut?'<span class="badge" style="background:#fef3c7;color:#92400e">⏳ Giờ về chờ Quản lý duyệt</span>':'<span class="badge" style="background:#dcfce7;color:#166534">✓ Giờ về đã duyệt</span>'}
+      </div>`;
+    }
+  }
+  // [CO] Cảnh báo NV: các ngày TRƯỚC trong tháng đã chấm giờ vào nhưng QUÊN chấm giờ về
+  const monthRecCO = ((db.attendance||{})[u.id]||{})[period] || {};
+  const nowTs=Date.now();
+  const [yyCO,mmCO]=period.split('-').map(Number);
+  const forgotDays = Object.keys(monthRecCO).filter(d=>{
+    const r=monthRecCO[d];
+    if(!r || typeof r!=='object' || !r.checkIn || r.checkOut) return false;
+    return new Date(yyCO, mmCO-1, Number(d)+1).getTime() <= nowTs; // đã qua 0h00 hôm sau
+  }).map(Number).sort((a,b)=>a-b);
+  if(forgotDays.length){
+    coHtml += `<div style="margin-top:8px;background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:8px 10px;font-size:13px">
+      🚨 <b>Bạn QUÊN chấm giờ về ${forgotDays.length} ngày:</b> ${forgotDays.map(d=>String(d).padStart(2,'0')+'/'+String(mmCO).padStart(2,'0')).join(', ')}.
+      Mỗi ngày bị <b>trừ 1 điểm thái độ</b> vào KPI Ý thức (mục "Phối hợp đồng nghiệp, thái độ làm việc").</div>`;
+  }
+  // [NGHI] XIN NGHỈ — NV trình lý do nghỉ; được duyệt → O (có phép); từ chối/không lý do → K (không phép, tính KPI)
+  let leaveHtml='';
+  {
+    const mRec = ((db.attendance||{})[u.id]||{})[period] || {};
+    const leaveRows = Object.keys(mRec).map(d=>{
+      const r=mRec[d]; if(!r||typeof r!=='object'||!r.leaveReq) return '';
+      const dStr=String(d).padStart(2,'0')+'/'+period.split('-')[1];
+      const lr=r.leaveReq;
+      if(lr.status==='pending') return `<tr><td>${dStr}</td><td>${escapeHtml(lr.reason||'')}</td><td><span class="badge" style="background:#fef3c7;color:#92400e">⏳ Chờ duyệt</span></td><td><button class="btn sm outline" onclick="cancelLeaveRequest(${Number(d)})">↩ Hủy</button></td></tr>`;
+      if(lr.status==='approved') return `<tr><td>${dStr}</td><td>${escapeHtml(lr.reason||'')}</td><td><span class="badge" style="background:#dcfce7;color:#166534">✓ Nghỉ CÓ PHÉP (O)</span></td><td></td></tr>`;
+      return `<tr><td>${dStr}</td><td>${escapeHtml(lr.reason||'')}</td><td><span class="badge" style="background:#fee2e2;color:#991b1b" title="${escapeHtml(lr.decisionNote||'')}">✗ Nghỉ KHÔNG PHÉP (K) — tính vào KPI</span></td><td></td></tr>`;
+    }).filter(Boolean).join('');
+    leaveHtml = `<div style="margin-top:8px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:8px 10px;font-size:13px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>🌴 <b>Xin nghỉ:</b> trình lý do để người chấm công duyệt. Được duyệt = nghỉ <b>CÓ PHÉP (O)</b>; bị từ chối hoặc nghỉ không lý do = <b>KHÔNG PHÉP (K)</b> — tự động tính vào KPI Ý thức.</div>
+        <button class="btn" style="background:#0284c7" onclick="openLeaveRequestForm()">🌴 Xin nghỉ</button>
+      </div>
+      ${leaveRows?`<div class="tbl-wrap" style="margin-top:8px"><table style="font-size:12px"><thead><tr><th>Ngày</th><th>Lý do</th><th>Kết quả</th><th></th></tr></thead><tbody>${leaveRows}</tbody></table></div>`:''}
+    </div>`;
+  }
   // [YC1] ĐĂNG KÝ TĂNG CA — NV tự điền số GIỜ tăng ca thực tế, chờ Quản lý duyệt.
   //       KHÔNG tính tự động theo giờ về; chỉ tính giờ do NV khai và QL đã duyệt.
   const otHtml = renderSelfOTCard(u, db, period);
   return `<div class="card" style="border-left:5px solid #16a34a">
     <h3 style="border:none;padding:0;margin-bottom:8px">🟢 Tự chấm công</h3>
     ${bodyHtml}
+    ${lateHtml}
+    ${coHtml}
+    ${leaveHtml}
   </div>
   ${otHtml}`;
 }
+/* [CO] NV chấm GIỜ VỀ — tính số giờ làm việc, cảnh báo nếu chưa đủ 8 tiếng, gửi QL duyệt */
+window.selfCheckOut = async function(){
+  const u=currentUser(); if(!u) return;
+  const now=new Date();
+  const period=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const day=now.getDate();
+  const db=getDB();
+  const rec=_getAttRec(db, u.id, period, day);
+  if(!rec || !rec.checkIn){ toast('Bạn chưa chấm giờ VÀO hôm nay','error'); return; }
+  if(rec.checkOut){ toast('Bạn đã chấm giờ về hôm nay rồi ('+fmtDateTime(rec.checkOut)+')','warn'); return; }
+  const ts=now.getTime();
+  // [CT-GIO] Giờ làm việc = Giờ về − Giờ vào − 1,5h nghỉ trưa (không âm), làm tròn 0,1h
+  const LUNCH_HOURS = 1.5;
+  const rawHrs = (ts-rec.checkIn)/3600000;
+  const hrs = Math.max(0, Math.round((rawHrs - LUNCH_HOURS)*10)/10);
+  rec.checkOut=ts;
+  rec.workedHours=hrs;
+  rec.pendingCheckOut=true;
+  _setAttRec(db, u.id, period, day, rec);
+  await saveDB(db);
+  toast(hrs>=8
+    ? `Đã chấm giờ về ${fmtDateTime(ts)} — giờ làm = giờ về − giờ vào − 1,5h nghỉ trưa = ${hrs}h (đủ 8 tiếng). Chờ người chấm công duyệt.`
+    : `Đã chấm giờ về ${fmtDateTime(ts)} — ⚠ giờ làm (đã trừ 1,5h nghỉ trưa) = ${hrs}h, CHƯA đủ 8 tiếng! Chờ người chấm công duyệt.`,
+    hrs>=8?'success':'warn');
+  render();
+};
+/* [CO] Quản lý duyệt / từ chối GIỜ VỀ */
+window.confirmCheckOut = async function(empId, period, day){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const db=getDB();
+  const rec=_getAttRec(db, empId, period, day);
+  if(!rec || !rec.pendingCheckOut){ toast('Không có giờ về chờ duyệt','warn'); return; }
+  rec.pendingCheckOut=false;
+  rec.checkOutConfirmedBy=currentUser().id; rec.checkOutConfirmedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã duyệt giờ về ('+(rec.workedHours||0)+'h làm việc)');
+  render();
+};
+window.rejectCheckOut = async function(empId, period, day){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const db=getDB();
+  const rec=_getAttRec(db, empId, period, day);
+  if(!rec || !rec.pendingCheckOut){ toast('Không có giờ về chờ duyệt','warn'); return; }
+  delete rec.checkOut; delete rec.workedHours; delete rec.pendingCheckOut;
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã từ chối — yêu cầu NV chấm lại giờ về','warn');
+  render();
+};
+/* [CC2] NV mở form trình bày lý do đến muộn (cho ngày hôm nay) */
+window.openLateReasonForm = function(){
+  const u=currentUser(); if(!u) return;
+  openModal({
+    title:'📝 Trình bày lý do đến muộn', size:'sm',
+    html:`
+      <div class="help-text">Lý do sẽ được gửi Quản lý xét duyệt. Nếu được <b>chấp thuận</b>, hôm nay KHÔNG bị tính là đi làm muộn (và không bị trừ ½ công nếu muộn quá 1 tiếng).</div>
+      <div class="field"><label>Lý do đến muộn *</label>
+        <textarea id="late-reason-text" rows="3" placeholder="VD: Xe hỏng giữa đường, con ốm phải đưa đi khám, làm việc với khách hàng từ sáng..."></textarea></div>
+    `,
+    footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
+            <button class="btn success" onclick="submitLateReason()">📤 Gửi lý do</button>`
+  });
+};
+window.submitLateReason = async function(){
+  const u=currentUser(); if(!u) return;
+  const text=(document.getElementById('late-reason-text')?.value||'').trim();
+  if(!text){ toast('Nhập lý do đến muộn','error'); return; }
+  const now=new Date();
+  const period=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const day=now.getDate();
+  const db=getDB();
+  const rec=_getAttRec(db, u.id, period, day);
+  if(!rec || !rec.late){ toast('Hôm nay bạn không bị ghi nhận đi muộn','warn'); closeModal(); return; }
+  rec.lateReason={text, status:'pending', requestedBy:u.id, requestedAt:Date.now()};
+  _setAttRec(db, u.id, period, day, rec);
+  await saveDB(db);
+  closeModal(); render();
+  toast('Đã gửi lý do đến muộn — chờ Quản lý duyệt');
+};
+/* [NGHI] NV nộp ĐƠN XIN NGHỈ (chọn ngày + lý do) */
+window.openLeaveRequestForm = function(){
+  const u=currentUser(); if(!u) return;
+  const now=new Date();
+  const todayIso=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+  openModal({
+    title:'🌴 Đơn xin nghỉ', size:'sm',
+    html:`
+      <div class="help-text">Đơn được gửi tới người chấm công. <b>Được duyệt</b> → ngày đó tính nghỉ <b>CÓ PHÉP (O)</b>. <b>Bị từ chối</b> (hoặc nghỉ không trình lý do) → nghỉ <b>KHÔNG PHÉP (K)</b> và tự động tính vào chỉ tiêu KPI Ý thức "Số lần nghỉ không có phép".</div>
+      <div class="field"><label>Ngày xin nghỉ *</label><input type="date" id="leave-date" value="${todayIso}"></div>
+      <div class="field"><label>Lý do xin nghỉ *</label>
+        <textarea id="leave-reason" rows="3" placeholder="VD: Con ốm phải đưa đi khám, việc gia đình, khám sức khỏe định kỳ..."></textarea></div>
+    `,
+    footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
+            <button class="btn success" onclick="submitLeaveRequest()">📤 Gửi đơn xin nghỉ</button>`
+  });
+};
+window.submitLeaveRequest = async function(){
+  const u=currentUser(); if(!u) return;
+  const dateStr=document.getElementById('leave-date')?.value;
+  const reason=(document.getElementById('leave-reason')?.value||'').trim();
+  if(!dateStr){ toast('Chọn ngày xin nghỉ','error'); return; }
+  if(!reason){ toast('Nhập lý do xin nghỉ — nghỉ không lý do sẽ bị tính KHÔNG PHÉP','error'); return; }
+  const d=new Date(dateStr);
+  const period=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  const day=d.getDate();
+  const db=getDB();
+  const rec=_getAttRec(db, u.id, period, day)||{};
+  if(rec.leaveReq && rec.leaveReq.status==='pending'){ toast('Ngày này đã có đơn xin nghỉ chờ duyệt','warn'); return; }
+  if(rec.code==='O'){ toast('Ngày này đã được chấm nghỉ CÓ PHÉP','warn'); return; }
+  rec.leaveReq={reason, status:'pending', requestedBy:u.id, requestedAt:Date.now()};
+  _setAttRec(db, u.id, period, day, rec);
+  await saveDB(db);
+  closeModal(); render();
+  toast('Đã gửi đơn xin nghỉ — chờ người chấm công duyệt');
+};
+window.cancelLeaveRequest = async function(day){
+  const u=currentUser(); if(!u) return;
+  const now=new Date();
+  const period=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+  const db=getDB();
+  const rec=_getAttRec(db, u.id, period, day);
+  if(!rec || !rec.leaveReq || rec.leaveReq.status!=='pending'){ toast('Không có đơn chờ duyệt','warn'); return; }
+  delete rec.leaveReq;
+  _setAttRec(db, u.id, period, day, rec);
+  await saveDB(db);
+  toast('Đã hủy đơn xin nghỉ','info'); render();
+};
+/* [NGHI] Người chấm công duyệt đơn nghỉ: Chấp thuận → O (có phép); Từ chối → K (không phép, tính KPI) */
+window.approveLeaveRequest = async function(empId, period, day){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const db=getDB();
+  const rec=_getAttRec(db, empId, period, day);
+  if(!rec || !rec.leaveReq || rec.leaveReq.status!=='pending'){ toast('Không có đơn chờ duyệt','warn'); return; }
+  rec.code='O';
+  rec.leaveReq.status='approved';
+  rec.leaveReq.decidedBy=currentUser().id; rec.leaveReq.decidedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã duyệt: nghỉ CÓ PHÉP (O)'); render();
+};
+window.rejectLeaveRequest = async function(empId, period, day){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const note=prompt('Lý do từ chối (hiển thị cho NV):','')||'';
+  const db=getDB();
+  const rec=_getAttRec(db, empId, period, day);
+  if(!rec || !rec.leaveReq || rec.leaveReq.status!=='pending'){ toast('Không có đơn chờ duyệt','warn'); return; }
+  rec.code='K';
+  rec.leaveReq.status='rejected';
+  rec.leaveReq.decisionNote=note;
+  rec.leaveReq.decidedBy=currentUser().id; rec.leaveReq.decidedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã từ chối: tính nghỉ KHÔNG PHÉP (K) — sẽ vào KPI Ý thức','warn'); render();
+};
+/* [CC2] Quản lý duyệt / từ chối lý do đến muộn */
+window.approveLateReason = async function(empId, period, day){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const db=getDB();
+  const rec=_getAttRec(db, empId, period, day);
+  if(!rec || !rec.lateReason || rec.lateReason.status!=='pending'){ toast('Không có lý do chờ duyệt','warn'); return; }
+  rec.lateExcused=true;
+  rec.lateReason.status='approved';
+  rec.lateReason.decidedBy=currentUser().id; rec.lateReason.decidedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã CHẤP THUẬN lý do — ngày này không tính đi muộn');
+  render();
+};
+window.rejectLateReason = async function(empId, period, day){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
+  const note=prompt('Lý do từ chối (hiển thị cho NV):','')||'';
+  const db=getDB();
+  const rec=_getAttRec(db, empId, period, day);
+  if(!rec || !rec.lateReason || rec.lateReason.status!=='pending'){ toast('Không có lý do chờ duyệt','warn'); return; }
+  rec.lateReason.status='rejected';
+  rec.lateReason.decisionNote=note;
+  rec.lateReason.decidedBy=currentUser().id; rec.lateReason.decidedAt=Date.now();
+  _setAttRec(db, empId, period, day, rec);
+  await saveDB(db);
+  toast('Đã TỪ CHỐI lý do đến muộn','warn');
+  render();
+};
 // [YC1] Card đăng ký tăng ca của NV (theo ngày, trong tháng hiện tại)
 function renderSelfOTCard(u, db, period){
   const now = new Date();
@@ -2053,8 +2383,8 @@ function renderSelfOTCard(u, db, period){
         <input type="date" id="ot-date" value="${todayIso}" max="${todayIso}" style="width:auto"></div>
       <div class="field" style="margin:0"><label>Số giờ (h)</label>
         <input type="number" id="ot-hours" min="0.5" max="12" step="0.5" placeholder="VD: 2" style="width:90px"></div>
-      <div class="field" style="margin:0;flex:1;min-width:160px"><label>Nội dung công việc tăng ca</label>
-        <input type="text" id="ot-note" placeholder="VD: Hoàn thiện hồ sơ thẩm duyệt dự án A"></div>
+      <div class="field" style="margin:0;flex:1;min-width:160px"><label>Lý do tăng ca *</label>
+        <input type="text" id="ot-note" placeholder="Lý do/Nội dung tăng ca — VD: Hoàn thiện hồ sơ thẩm duyệt dự án A"></div>
       <button class="btn warn" onclick="submitOTRequest()">📤 Gửi đăng ký OT</button>
     </div>
     ${otRows?`<div class="tbl-wrap" style="margin-top:10px"><table style="font-size:12px">
@@ -2070,6 +2400,7 @@ window.submitOTRequest = async function(){
   const note = (document.getElementById('ot-note')?.value||'').trim();
   if(!dateStr){ toast('Chọn ngày tăng ca','error'); return; }
   if(!hours || hours<=0){ toast('Nhập số giờ tăng ca (0,5 – 12h)','error'); return; }
+  if(!note){ toast('Nhập LÝ DO tăng ca — người chấm công cần lý do để phê duyệt','error'); return; } // [OT-LD]
   if(hours>12){ toast('Số giờ tăng ca tối đa 12h/ngày','error'); return; }
   const d = new Date(dateStr);
   if(d.getTime() > Date.now()){ toast('Không đăng ký tăng ca cho ngày tương lai','error'); return; }
@@ -2101,7 +2432,7 @@ window.cancelOTRequest = async function(day){
 };
 // [YC1] Quản lý duyệt / từ chối đăng ký OT
 window.confirmOTRequest = async function(empId, period, day){
-  if(!canApprove()){ toast('Bạn không có quyền duyệt','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
   const db = getDB();
   const rec = _getAttRec(db, empId, period, day);
   if(!rec || !rec.otReq || rec.otReq.status!=='pending'){ toast('Không có đăng ký OT chờ duyệt','warn'); return; }
@@ -2114,7 +2445,7 @@ window.confirmOTRequest = async function(empId, period, day){
   render();
 };
 window.rejectOTRequest = async function(empId, period, day){
-  if(!canApprove()){ toast('Bạn không có quyền duyệt','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
   const note = prompt('Lý do từ chối tăng ca (sẽ hiển thị cho NV):','')||'';
   const db = getDB();
   const rec = _getAttRec(db, empId, period, day);
@@ -2133,6 +2464,10 @@ function renderAttendancePendingList(u, db){
   let users = db.users.filter(x=>x.role!=='admin');
   const pending = [];
   const pendingOT = []; // [YC1] đăng ký tăng ca chờ duyệt
+  const pendingLate = []; // [CC2] lý do đến muộn chờ duyệt
+  const pendingCO = [];   // [CO] giờ về chờ duyệt
+  const pendingLeave = []; // [NGHI] đơn xin nghỉ chờ duyệt
+  const forgotCO = [];    // [CO] quên chấm giờ về (đã qua 0h00 hôm sau)
   users.forEach(emp=>{
     const empRec = db.attendance[emp.id]||{};
     Object.keys(empRec).forEach(period=>{
@@ -2145,9 +2480,130 @@ function renderAttendancePendingList(u, db){
         if(r && typeof r==='object' && r.otReq && r.otReq.status==='pending'){
           pendingOT.push({emp, period, day:Number(day), rec:r});
         }
+        if(r && typeof r==='object' && r.lateReason && r.lateReason.status==='pending'){
+          pendingLate.push({emp, period, day:Number(day), rec:r});
+        }
+        if(r && typeof r==='object' && r.pendingCheckOut){
+          pendingCO.push({emp, period, day:Number(day), rec:r});
+        }
+        if(r && typeof r==='object' && r.leaveReq && r.leaveReq.status==='pending'){
+          pendingLeave.push({emp, period, day:Number(day), rec:r});
+        }
+        if(r && typeof r==='object' && r.checkIn && !r.checkOut){
+          const [fy,fm]=period.split('-').map(Number);
+          if(new Date(fy, fm-1, Number(day)+1).getTime() <= Date.now()){
+            forgotCO.push({emp, period, day:Number(day), rec:r});
+          }
+        }
       });
     });
   });
+  // [CO] Card duyệt GIỜ VỀ
+  let coCard='';
+  if(pendingCO.length){
+    pendingCO.sort((a,b)=>(b.rec.checkOut||0)-(a.rec.checkOut||0));
+    const coRows=pendingCO.map(p=>{
+      const dStr=`${String(p.day).padStart(2,'0')}/${p.period.split('-')[1]}/${p.period.split('-')[0]}`;
+      const hrs=Number(p.rec.workedHours)||0;
+      return `<tr>
+        <td><b>${escapeHtml(p.emp.name)}</b><div class="hint muted">${escapeHtml(p.emp.code||p.emp.username)}</div></td>
+        <td><span class="badge co">${getCompany(p.emp.companyId).code}</span></td>
+        <td>${escapeHtml(dStr)}</td>
+        <td>${p.rec.checkIn?fmtDateTime(p.rec.checkIn):'—'}</td>
+        <td>${p.rec.checkOut?fmtDateTime(p.rec.checkOut):'—'}</td>
+        <td class="center">${hrs>=8?`<b style="color:#16a34a">${hrs}h ✓</b>`:`<b style="color:#dc2626">${hrs}h ⚠ &lt;8h</b>`}</td>
+        <td>
+          <button class="btn sm success" onclick="confirmCheckOut('${p.emp.id}','${p.period}',${p.day})">✓ Duyệt</button>
+          <button class="btn sm danger" onclick="rejectCheckOut('${p.emp.id}','${p.period}',${p.day})">✗ Từ chối</button>
+        </td>
+      </tr>`;
+    }).join('');
+    coCard=`<div class="card" style="border-left:5px solid #6366f1">
+      <h3 style="border:none;padding:0;margin-bottom:8px">🔴 Chấm GIỜ VỀ chờ duyệt <span class="badge" style="background:#e0e7ff;color:#3730a3">${pendingCO.length}</span></h3>
+      <div class="hint" style="margin-bottom:8px">💡 Duyệt giờ về để chốt <b>số giờ làm việc trong ngày</b> (chuẩn ≥ 8 tiếng) — tổng giờ làm tháng được dùng để chấm KPI tự động.</div>
+      <div class="tbl-wrap"><table style="font-size:13px">
+        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ vào</th><th>Giờ về</th><th>Giờ làm</th><th></th></tr></thead>
+        <tbody>${coRows}</tbody>
+      </table></div>
+    </div>`;
+  }
+  // [CO] Card cảnh báo QUÊN CHẤM GIỜ VỀ (đã qua 0h00 hôm sau)
+  let forgotCard='';
+  if(forgotCO.length){
+    forgotCO.sort((a,b)=>(b.rec.checkIn||0)-(a.rec.checkIn||0));
+    const fRows=forgotCO.slice(0,15).map(p=>{
+      const dStr=`${String(p.day).padStart(2,'0')}/${p.period.split('-')[1]}/${p.period.split('-')[0]}`;
+      return `<tr>
+        <td><b>${escapeHtml(p.emp.name)}</b><div class="hint muted">${escapeHtml(p.emp.code||p.emp.username)}</div></td>
+        <td><span class="badge co">${getCompany(p.emp.companyId).code}</span></td>
+        <td>${escapeHtml(dStr)}</td>
+        <td>${p.rec.checkIn?fmtDateTime(p.rec.checkIn):'—'}</td>
+        <td><span class="badge" style="background:#fee2e2;color:#991b1b">−1 điểm thái độ (tự động)</span></td>
+      </tr>`;
+    }).join('');
+    forgotCard=`<div class="card" style="border-left:5px solid #dc2626;background:#fef2f2">
+      <h3 style="border:none;padding:0;margin-bottom:8px;color:#991b1b">🚨 NV ra về KHÔNG chấm giờ về <span class="badge" style="background:#fee2e2;color:#991b1b">${forgotCO.length}</span></h3>
+      <div class="hint" style="margin-bottom:8px">Các ngày đã qua 0h00 hôm sau mà NV chưa chấm giờ về — phần mềm <b>tự động trừ 1 điểm/ngày</b> vào chỉ tiêu KPI Ý thức "Phối hợp đồng nghiệp, thái độ làm việc" khi áp dụng KPI tự động.${forgotCO.length>15?' (hiển thị 15 dòng gần nhất)':''}</div>
+      <div class="tbl-wrap"><table style="font-size:13px">
+        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ vào</th><th>Hệ quả</th></tr></thead>
+        <tbody>${fRows}</tbody>
+      </table></div>
+    </div>`;
+  }
+  // [NGHI] Card duyệt ĐƠN XIN NGHỈ
+  let leaveCard='';
+  if(pendingLeave.length){
+    pendingLeave.sort((a,b)=>(b.rec.leaveReq.requestedAt||0)-(a.rec.leaveReq.requestedAt||0));
+    const lRows=pendingLeave.map(p=>{
+      const dStr=`${String(p.day).padStart(2,'0')}/${p.period.split('-')[1]}/${p.period.split('-')[0]}`;
+      return `<tr>
+        <td><b>${escapeHtml(p.emp.name)}</b><div class="hint muted">${escapeHtml(p.emp.code||p.emp.username)}</div></td>
+        <td><span class="badge co">${getCompany(p.emp.companyId).code}</span></td>
+        <td>${escapeHtml(dStr)}</td>
+        <td>${escapeHtml(p.rec.leaveReq.reason||'')}</td>
+        <td>
+          <button class="btn sm success" onclick="approveLeaveRequest('${p.emp.id}','${p.period}',${p.day})" title="Chấp thuận → nghỉ CÓ PHÉP (O)">✓ Có phép (O)</button>
+          <button class="btn sm danger" onclick="rejectLeaveRequest('${p.emp.id}','${p.period}',${p.day})" title="Từ chối → nghỉ KHÔNG PHÉP (K), tính vào KPI Ý thức">✗ Không phép (K)</button>
+        </td>
+      </tr>`;
+    }).join('');
+    leaveCard=`<div class="card" style="border-left:5px solid #0284c7">
+      <h3 style="border:none;padding:0;margin-bottom:8px">🌴 Đơn XIN NGHỈ chờ duyệt <span class="badge" style="background:#e0f2fe;color:#075985">${pendingLeave.length}</span></h3>
+      <div class="hint" style="margin-bottom:8px">💡 <b>Chấp thuận</b> → chấm O (nghỉ CÓ phép). <b>Từ chối</b> → chấm K (nghỉ KHÔNG phép) — số ngày K tự động truyền sang KPI Ý thức mục "nghỉ không phép".</div>
+      <div class="tbl-wrap"><table style="font-size:13px">
+        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày nghỉ</th><th>Lý do</th><th></th></tr></thead>
+        <tbody>${lRows}</tbody>
+      </table></div>
+    </div>`;
+  }
+  // [CC2] Card duyệt lý do đến muộn
+  let lateCard='';
+  if(pendingLate.length){
+    pendingLate.sort((a,b)=>(b.rec.lateReason.requestedAt||0)-(a.rec.lateReason.requestedAt||0));
+    const lateRows = pendingLate.map(p=>{
+      const dStr = `${String(p.day).padStart(2,'0')}/${p.period.split('-')[1]}/${p.period.split('-')[0]}`;
+      const over60 = Number(p.rec.lateMins)>60;
+      return `<tr>
+        <td><b>${escapeHtml(p.emp.name)}</b><div class="hint muted">${escapeHtml(p.emp.code||p.emp.username)}</div></td>
+        <td><span class="badge co">${getCompany(p.emp.companyId).code}</span></td>
+        <td>${escapeHtml(dStr)}</td>
+        <td class="center"><b style="color:#dc2626">${p.rec.lateMins||0}'</b>${over60?'<div class="hint" style="color:#991b1b">&gt;1h → ½ công nếu không duyệt</div>':''}</td>
+        <td>${escapeHtml(p.rec.lateReason.text||'')}</td>
+        <td>
+          <button class="btn sm success" onclick="approveLateReason('${p.emp.id}','${p.period}',${p.day})" title="Chấp thuận — ngày này KHÔNG tính đi muộn">✓ Chấp thuận</button>
+          <button class="btn sm danger" onclick="rejectLateReason('${p.emp.id}','${p.period}',${p.day})">✗ Từ chối</button>
+        </td>
+      </tr>`;
+    }).join('');
+    lateCard = `<div class="card" style="border-left:5px solid #dc2626">
+      <h3 style="border:none;padding:0;margin-bottom:8px">📝 Lý do ĐẾN MUỘN chờ duyệt <span class="badge" style="background:#fee2e2;color:#991b1b">${pendingLate.length}</span></h3>
+      <div class="hint" style="margin-bottom:8px">💡 Nếu <b>Chấp thuận</b>: ngày đó KHÔNG tính đi muộn (không trừ KPI, không trừ ½ công). Nếu <b>Từ chối</b>: giữ nguyên trạng thái muộn — muộn quá 1 tiếng sẽ chỉ tính nửa ngày công.</div>
+      <div class="tbl-wrap"><table style="font-size:13px">
+        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Muộn</th><th>Lý do</th><th></th></tr></thead>
+        <tbody>${lateRows}</tbody>
+      </table></div>
+    </div>`;
+  }
   // [YC1] Card duyệt tăng ca
   let otCard='';
   if(pendingOT.length){
@@ -2175,7 +2631,7 @@ function renderAttendancePendingList(u, db){
       </table></div>
     </div>`;
   }
-  if(!pending.length && otCard) return otCard;
+  if(!pending.length && (otCard||lateCard||coCard||forgotCard||leaveCard)) return forgotCard + lateCard + coCard + leaveCard + otCard;
   if(!pending.length){
     return `<div class="card" style="border-left:5px solid #94a3b8">
       <h3 style="border:none;padding:0">📋 Chấm công chờ duyệt <span class="badge" style="background:#dcfce7;color:#166534">0</span></h3>
@@ -2209,7 +2665,7 @@ function renderAttendancePendingList(u, db){
       <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ vào</th><th>Đánh giá</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-  </div>` + otCard;
+  </div>` + forgotCard + lateCard + coCard + leaveCard + otCard;
 }
 // NV tự chấm công hôm nay
 window.selfCheckIn = async function(){
@@ -2241,9 +2697,12 @@ window.selfCheckIn = async function(){
   };
   _setAttRec(db, u.id, period, day, newRec);
   await saveDB(db);
-  toast(isLate
-    ? `Đã chấm công lúc ${fmtDateTime(ts)} — bạn đã đi MUỘN ${lateMins} phút. Đã gửi Quản lý duyệt.`
-    : `Đã chấm công lúc ${fmtDateTime(ts)} — đúng giờ. Đã gửi Quản lý duyệt.`,
+  // [MUON] Nhắc nhở phân 2 mức: <1 tiếng = xác nhận đi muộn; >1 tiếng = đi muộn + chỉ tính 1/2 ngày công
+  toast(!isLate
+    ? `Đã chấm công lúc ${fmtDateTime(ts)} — đúng giờ. Đã gửi người chấm công duyệt.`
+    : (lateMins>60
+      ? `⚠ Đã chấm công lúc ${fmtDateTime(ts)} — ĐI MUỘN ${lateMins} phút (QUÁ 1 TIẾNG): nếu không có lý do được duyệt, hôm nay chỉ tính 1/2 NGÀY CÔNG. Hãy bấm "Trình bày lý do đến muộn" ngay!`
+      : `⚠ Đã chấm công lúc ${fmtDateTime(ts)} — ĐI MUỘN ${lateMins} phút (dưới 1 tiếng): sẽ bị xác nhận là đi muộn và tính vào KPI. Bạn có thể trình bày lý do để người duyệt xem xét.`),
     isLate?'warn':'success');
   render();
 };
@@ -2267,7 +2726,7 @@ window.cancelSelfCheckIn = async function(){
 };
 // Quản lý xác nhận chấm công
 window.confirmCheckIn = async function(empId, period, day){
-  if(!canApprove()){ toast('Bạn không có quyền duyệt','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
   const db = getDB();
   const rec = _getAttRec(db, empId, period, day);
   if(!rec || !rec.pendingCheckIn){ toast('Không có yêu cầu chờ duyệt','warn'); return; }
@@ -2281,7 +2740,7 @@ window.confirmCheckIn = async function(empId, period, day){
 };
 // Quản lý từ chối — xóa pending, NV chấm lại
 window.rejectCheckIn = async function(empId, period, day){
-  if(!canApprove()){ toast('Bạn không có quyền duyệt','error'); return; }
+  if(!canApproveAttendance()){ toast('Bạn không có quyền duyệt','error'); return; }
   const reason = prompt('Lý do từ chối (sẽ hiển thị cho NV):','Yêu cầu chấm công lại');
   if(reason===null) return;
   const db = getDB();
@@ -2302,24 +2761,32 @@ window.exportAttendanceExcel = function(){
   const [yy,mm] = period.split('-').map(Number);
   const wd = countWorkingDays(yy, mm);
   const u = currentUser();
-  let users = db.users.filter(x=>x.role!=='admin');
-  if(u.role==='manager') users = users.filter(x=>x.companyId===u.companyId);
+  let users = db.users.filter(x=>x.role!=='admin'); // [YC3] đủ NV 3 công ty
   const rows = [
     ['BẢNG TỔNG HỢP CHẤM CÔNG & LƯƠNG · '+fmtPeriod(period)],
     ['Số ngày làm việc trong tháng:', wd],
     [],
-    ['STT','Mã NV','Họ và tên','Công ty','P (công đủ)','H (nửa ngày)','O (phép)','Tổng công','Tỷ lệ %','Lương cứng + Hỗ trợ','Lương theo công','Σ Thưởng KPI','TỔNG LƯƠNG']
+    ['STT','Mã NV','Họ và tên','Công ty','P (công đủ)','H (nửa ngày)','O (có phép)','K (không phép)','Tổng công','Tỷ lệ %','Lương cứng + Hỗ trợ','Lương theo công','Σ Thưởng KPI','TỔNG LƯƠNG']
   ];
   users.forEach((emp,i)=>{
     const sal = computeSalaryMulti(emp, period);
     const rec = (db.attendance[emp.id]||{})[period]||{};
-    let p=0,h=0,o=0;
-    Object.values(rec).forEach(v=>{ if(v==='P')p++; else if(v==='H')h++; else if(v==='O')o++; });
+    let p=0,h=0,o=0,k=0;
+    // [FIX] Đếm đúng cả bản ghi dạng object (tự chấm công) + quy tắc muộn >1h = nửa công
+    Object.values(rec).forEach(v=>{
+      let code, pending=false;
+      if(typeof v==='object' && v!==null){
+        if(v.pendingCheckIn) return;
+        code=v.code||'';
+        if(code==='P' && v.late && Number(v.lateMins)>60 && !v.lateExcused) code='H';
+      } else code=v||'';
+      if(code==='P')p++; else if(code==='H')h++; else if(code==='O')o++; else if(code==='K')k++;
+    });
     const totalDays = p + 0.5*h;
     const ratio = wd>0 ? totalDays/wd : 1;
     const baseAdj = Math.round((sal.base + sal.allowance) * Math.min(1, ratio));
     const total = baseAdj + sal.totalKpiActual;
-    rows.push([i+1, emp.code||emp.username, emp.name, getCompany(emp.companyId).code, p, h, o, totalDays, (ratio*100).toFixed(1)+'%', sal.base+sal.allowance, baseAdj, Math.round(sal.totalKpiActual), Math.round(total)]);
+    rows.push([i+1, emp.code||emp.username, emp.name, getCompany(emp.companyId).code, p, h, o, k, totalDays, (ratio*100).toFixed(1)+'%', sal.base+sal.allowance, baseAdj, Math.round(sal.totalKpiActual), Math.round(total)]);
   });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Chấm công + Lương');
@@ -3458,6 +3925,9 @@ const AUTO_KPI_SOURCES = {
   report_ontime_rate: {label:'% báo cáo/công việc nộp đúng hạn', scope:'disc'},
   late_count:         {label:'SỐ lần đi làm muộn (chấm công)',   scope:'disc'},
   ot_hours:           {label:'Giờ tăng ca thực tế (chấm công)',  scope:'disc'},
+  absent_count:       {label:'SỐ lần nghỉ KHÔNG PHÉP (chấm công, mã K)', scope:'disc'}, // [CC3]
+  work_hours:         {label:'Tổng GIỜ LÀM VIỆC thực tế trong tháng (chấm vào–ra)', scope:'disc'}, // [CO]
+  attitude_score:     {label:'Điểm thái độ: 100 − 1đ/lần quên chấm giờ về', scope:'disc'}, // [CO]
   item_tasks:         {label:'Các công việc GẮN ĐÚNG HẠNG MỤC này', scope:'area'} // [YC-HM]
 };
 /* [YC-HM] Danh sách công việc của 1 NV thuộc 1 mảng trong 1 kỳ (dùng chung) */
@@ -3506,6 +3976,9 @@ function resolveAutoKey(area, item){
   if(item && item.autoKey!==undefined && item.autoKey!==null) return item.autoKey;
   const n=((item&&item.name)||'').toLowerCase();
   if(/báo cáo/.test(n))                                  return 'report_ontime_rate';
+  if(/nghỉ không.{0,4}phép|nghỉ ko phép/.test(n))        return 'absent_count'; // [CC3]
+  if(/giờ làm việc/.test(n))                             return 'work_hours'; // [CO]
+  if(/phối hợp.{0,20}(đồng nghiệp|thái độ)|thái độ làm việc/.test(n)) return 'attitude_score'; // [CO]
   if(/đi làm|đi trễ|đi muộn|đúng giờ/.test(n))           return 'late_count';
   if(/tăng ca/.test(n))                                  return 'ot_hours';
   if(/đúng tiến độ|hoàn thành.*tiến độ|đúng hạn/.test(n))return 'ontime_rate';
@@ -3551,18 +4024,29 @@ function autoDisciplineStats(user, period){
   const db=getDB();
   const p=period||thisPeriod();
   const rec=((db.attendance||{})[user.id]||{})[p]||{};
-  let lateCount=0, otHours=0, hasAttendance=false;
-  Object.values(rec).forEach(v=>{
+  let lateCount=0, otHours=0, absentNoPermit=0, hasAttendance=false;
+  let workedHours=0, forgotCheckout=0; // [CO]
+  const [pyy,pmm]=p.split('-').map(Number);
+  Object.keys(rec).forEach(dayKey=>{
+    const v=rec[dayKey];
     if(v==null) return;
     hasAttendance=true;
     if(typeof v==='object'){
-      if(v.late===true) lateCount++;
+      // [CC2] Muộn có lý do được duyệt (lateExcused) KHÔNG tính vào KPI
+      if(v.late===true && !v.lateExcused) lateCount++;
       otHours += Number(v.ot)||0;
-    }
+      if(v.code==='K') absentNoPermit++; // [CC3] nghỉ KHÔNG phép
+      // [CO] Giờ làm việc thực tế (giờ về đã được duyệt)
+      if(v.checkOut && !v.pendingCheckOut) workedHours += Number(v.workedHours)||0;
+      // [CO] Quên chấm giờ về: có giờ vào, không giờ về, đã qua 0h00 hôm sau → -1 điểm thái độ/ngày
+      if(v.checkIn && !v.checkOut && new Date(pyy, pmm-1, Number(dayKey)+1).getTime() <= Date.now()) forgotCheckout++;
+    } else if(v==='K'){ absentNoPermit++; }
   });
+  workedHours=Math.round(workedHours*10)/10;
   const rep = autoKpiScores(user, p).discipline; // % task đúng hạn trên toàn bộ việc được giao
   return {
-    lateCount, otHours, hasAttendance,
+    lateCount, otHours, absentNoPermit, hasAttendance,
+    workedHours, forgotCheckout, // [CO]
     reportRate: rep
   };
 }
@@ -3576,6 +4060,9 @@ function computeAutoActual(autoKey, areaStats, discStats){
     case 'report_ontime_rate': return discStats ? discStats.reportRate : null;
     case 'late_count':         return discStats && discStats.hasAttendance ? discStats.lateCount : null;
     case 'ot_hours':           return discStats && discStats.hasAttendance ? discStats.otHours : null;
+    case 'absent_count':       return discStats && discStats.hasAttendance ? discStats.absentNoPermit : null; // [CC3]
+    case 'work_hours':         return discStats && discStats.workedHours>0 ? discStats.workedHours : null; // [CO] chỉ tự chấm khi có dữ liệu vào–ra
+    case 'attitude_score':     return discStats && discStats.forgotCheckout>0 ? Math.max(0, 100 - discStats.forgotCheckout) : null; // [CO] chỉ tự trừ khi có vi phạm; không vi phạm → QL chấm tay
     default: return null;
   }
 }
@@ -5428,6 +5915,22 @@ function viewSettings(main, u){
       </div>`).join('')}
     </div>
     <div class="card">
+      <h3>✅ Người được quyền duyệt &amp; xác nhận chấm công <span class="muted" style="font-size:12px;font-weight:400">(toàn bộ 3 công ty)</span></h3>
+      <div class="help-text">[PQ2] <b>Admin là người DUY NHẤT có quyền phân quyền chấm công.</b> Tích chọn người được phép <b>duyệt giờ vào, giờ về, nghỉ phép, tăng ca, lý do đến muộn</b> và <b>chấm công hộ</b> cho cả 3 công ty. Quản lý / Trưởng phòng <b>không còn mặc định</b> có quyền — muốn duyệt chấm công cũng phải được tích chọn tại đây.</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px">
+        ${db.users.filter(x=>x.role!=='admin').sort((a,b)=>{
+          const ca=getCompany(a.companyId).code||'', cb=getCompany(b.companyId).code||'';
+          if(ca!==cb) return ca.localeCompare(cb);
+          return (a.name||'').localeCompare(b.name||'','vi');
+        }).map(e=>`
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:8px;cursor:pointer;font-weight:400">
+            <input type="checkbox" class="att-appr-chk" value="${e.id}" ${(db.settings.attendanceApprovers||[]).includes(e.id)?'checked':''}>
+            <span><b>${escapeHtml(e.name)}</b> <span class="muted" style="font-size:11px">(${escapeHtml(e.code||e.username)} · ${getCompany(e.companyId).code} · ${roleLabel(e.role)})</span></span>
+          </label>`).join('') || '<div class="muted">Chưa có nhân sự</div>'}
+      </div>
+      <div style="margin-top:10px"><button class="btn success" onclick="saveAttendanceApprovers()">💾 Lưu danh sách người duyệt</button></div>
+    </div>
+    <div class="card">
       <h3>📧 Cấu hình EmailJS (để gửi email tự động)</h3>
       <div class="help-text">
         Đăng ký tại <b>emailjs.com</b> (miễn phí 200 email/tháng) → tạo Service + Template → lấy 3 thông tin sau.<br>
@@ -5536,6 +6039,15 @@ window.saveCompanyWorkTime = function(){
   });
   if(invalid){ toast(`Giờ của công ty ${invalid} không hợp lệ (cần HH:MM)`,'error'); return; }
   saveDB(db); toast('Đã lưu cấu hình giờ làm việc theo công ty');
+};
+/* [CC4] Lưu danh sách người được quyền duyệt chấm công */
+window.saveAttendanceApprovers = function(){
+  const u=currentUser();
+  if(!u || u.role!=='admin'){ toast('Chỉ Admin được phân quyền duyệt chấm công','error'); return; }
+  const db=getDB();
+  db.settings.attendanceApprovers = Array.from(document.querySelectorAll('.att-appr-chk:checked')).map(c=>c.value);
+  saveDB(db);
+  toast('Đã lưu: '+db.settings.attendanceApprovers.length+' nhân viên được quyền duyệt chấm công');
 };
 window.saveEmailJS = function(){
   const db=getDB();
@@ -6166,6 +6678,16 @@ function canApprove(){
   const u=currentUser();
   return u && (u.role==='admin' || u.role==='manager' || u.role==='pm');
 }
+/* [PQ2] Quyền duyệt & xác nhận CHẤM CÔNG (giờ vào, giờ về, nghỉ, tăng ca, lý do muộn, lưới chấm công):
+   CHỈ gồm: Admin + những người được Admin CHỈ ĐỊNH trong Cài đặt hệ thống.
+   Quản lý (pm) / Trưởng phòng (manager) KHÔNG còn mặc định có quyền —
+   muốn duyệt chấm công cũng phải được Admin tích chọn. */
+function canApproveAttendance(){
+  const u=currentUser(); if(!u) return false;
+  if(u.role==='admin') return true;
+  const db=getDB();
+  return Array.isArray(db.settings.attendanceApprovers) && db.settings.attendanceApprovers.includes(u.id);
+}
 /* [YC5] Quyền duyệt (tiến độ/hoàn thành) đối với 1 công việc cụ thể:
    - Việc TỰ GIAO (selfAssigned): NV tạo việc KHÔNG được tự duyệt — chỉ admin/pm/manager.
    - Việc thường: admin, hoặc người giao việc với điều kiện không phải employee. */
@@ -6230,14 +6752,15 @@ function viewContracts(main, u){
   // NV không được xem tab "Nhập đầu vào" → ép về Dashboard
   if(isEmployee && _contractSubTab==='input') _contractSubTab='dashboard';
   const sheetLabels = {
-    dashboard:'📊 Dashboard quản lý dự án',
+    dashboard:'📊 Dashboard quản lý dự án Thi công',
     input:'📥 Nhập đầu vào dự án'
   };
   main.innerHTML=`
     <div class="page-head">
-      <h1>🏗 Quản lý dự án ${isEmployee?'<span class="muted" style="font-size:12px;font-weight:400">— Chế độ theo dõi</span>':''}</h1>
+      <h1>🏗 Quản lý dự án Thi công ${isEmployee?'<span class="muted" style="font-size:12px;font-weight:400">— Chế độ theo dõi</span>':''}</h1>
       <div class="actions">
         ${isEmployee?'':'<button class="btn success" onclick="openContractForm()">+ Thêm dự án</button>'}
+        ${isEmployee?'':'<button class="btn" style="background:#0f766e" onclick="openImportProjectDialog()" title="Nhập dự án từ file JSON đã export trước đó">📥 Import dự án</button>'}
       </div>
     </div>
     <div style="background:#1e3a8a;color:#fff;padding:6px 14px;border-radius:6px;font-size:13px;margin-bottom:10px">
@@ -6247,14 +6770,14 @@ function viewContracts(main, u){
       <button class="tab ${_contractSubTab==='dashboard'?'active':''}"  onclick="switchContractTab('dashboard')">📊 Dashboard</button>
       ${isEmployee?'':`<button class="tab ${_contractSubTab==='input'?'active':''}"      onclick="switchContractTab('input')">📥 Nhập đầu vào</button>`}
     </div>
-    <div class="help-text">💡 Mỗi dự án có dữ liệu hợp đồng, tiến độ thi công, hồ sơ PCCC, vật tư <b>độc lập</b>. <b>Double-click</b> vào 1 dự án trong dashboard hoặc bảng Nhập đầu vào → phần mềm mở <b>cửa sổ chi tiết có thể điều chỉnh kích thước</b> với đầy đủ các tab quản lý.</div>
+    <div class="help-text">💡 Mỗi dự án có dữ liệu hợp đồng, tiến độ thi công, hồ sơ PCCC, vật tư <b>độc lập</b>. Nút <b>↔</b> trên từng dòng để <b>chuyển dự án sang sheet Thiết kế PCCC</b> (và ngược lại) — giữ nguyên toàn bộ dữ liệu. <b>Double-click</b> vào 1 dự án trong dashboard hoặc bảng Nhập đầu vào → phần mềm mở <b>cửa sổ chi tiết có thể điều chỉnh kích thước</b> với đầy đủ các tab quản lý.</div>
     <div id="contract-body"></div>
   `;
   renderContractTabBody();
 }
 window.switchContractTab = function(t){
   _contractSubTab=t;
-  const sheetLabels = {dashboard:'📊 Dashboard quản lý dự án', input:'📥 Nhập đầu vào dự án'};
+  const sheetLabels = {dashboard:'📊 Dashboard quản lý dự án Thi công', input:'📥 Nhập đầu vào dự án'};
   const lbl=document.getElementById('cur-sheet-name'); if(lbl) lbl.textContent = sheetLabels[t]||'';
   // Refresh active tab styling
   document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
@@ -6391,7 +6914,7 @@ function renderContractDashboard(host){
           <th>Ngày bắt đầu</th>
           <th>Ngày kết thúc</th>
           <th>Tình trạng dự án</th>
-          ${(_isAdmin || _isManual)?'<th style="white-space:nowrap">Thao tác</th>':''}
+          <th style="white-space:nowrap">Thao tác</th>
         </tr></thead>
         <tbody>${_showList.map((c,i)=>{
           const cc = contractCalc(c);
@@ -6399,11 +6922,13 @@ function renderContractDashboard(host){
           let trStyle='';
           if(stat==='overdue') trStyle='background:#fee2e2';
           else if(stat==='soon') trStyle='background:#fef3c7';
-          const actionsCell = (_isAdmin || _isManual) ? `<td onclick="event.stopPropagation()" style="white-space:nowrap">
+          const actionsCell = `<td onclick="event.stopPropagation()" style="white-space:nowrap">
+            <button class="btn sm outline" style="padding:2px 6px" title="[DA3] Xuất toàn bộ dữ liệu dự án này ra file JSON (hợp đồng + công việc + phiếu nhập vật tư)" onclick="exportProjectJSON('${c.id}')">📤</button>
+            ${(u && u.role!=='employee')?`<button class="btn sm outline" style="padding:2px 6px;color:#0f766e;border-color:#0f766e" title="[DA4] Chuyển dự án sang sheet ${window._pcccMode?'Quản lý dự án THI CÔNG':'Quản lý Thiết kế PCCC'}" onclick="ctTransferProject('${c.id}')">↔</button>`:''}
             ${_isManual?`<button class="btn sm outline" style="padding:2px 6px" title="Di chuyển lên" ${i===0?'disabled':''} onclick="ctMoveProject('${c.id}','up')">▲</button>
             <button class="btn sm outline" style="padding:2px 6px" title="Di chuyển xuống" ${i===_showList.length-1?'disabled':''} onclick="ctMoveProject('${c.id}','down')">▼</button>`:''}
             ${_isAdmin?`<button class="btn sm danger" style="padding:2px 6px" title="Xóa dự án khỏi danh mục" onclick="ctDeleteProject('${c.id}')">🗑</button>`:''}
-          </td>` : '';
+          </td>`;
           return `<tr ondblclick="openContractWindow('${c.id}')" style="cursor:pointer;${trStyle}" title="Double-click vào BẤT KỲ ô nào để mở cửa sổ chi tiết dự án (có thể thay đổi kích thước)">
             <td>${i+1}</td>
             <td><b>${escapeHtml(c.name||'')}</b></td>
@@ -6416,10 +6941,104 @@ function renderContractDashboard(host){
             <td>${completionBadge(c.completionStatus)}</td>
             ${actionsCell}
           </tr>`;
-        }).join('') || `<tr><td colspan="${(_isAdmin||_isManual)?10:9}" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
+        }).join('') || `<tr><td colspan="10" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
       </table>
     </div>
   `;
+}
+/* ============================================================
+   [DA3] IMPORT / EXPORT TỪNG DỰ ÁN (file JSON đầy đủ dữ liệu)
+   - Export: hợp đồng + toàn bộ công việc + phiếu nhập vật tư của dự án.
+   - Import: đọc file JSON đã export, tạo dự án MỚI (cấp id mới, giữ nguyên nội dung).
+   ============================================================ */
+/* ============================================================
+   [DA4] CHUYỂN DỰ ÁN GIỮA 2 SHEET: Thiết kế PCCC ↔ Thi công
+   - Chỉ đổi "nhãn sheet" (pcccDesign) — GIỮ NGUYÊN toàn bộ dữ liệu:
+     hợp đồng, công việc, tiến độ, phụ lục vật tư, phiếu nhập, hồ sơ.
+   ============================================================ */
+window.ctTransferProject = function(cid){
+  const u=currentUser();
+  if(!u || u.role==='employee'){ toast('Nhân viên không có quyền chuyển dự án','error'); return; }
+  const db=getDB();
+  const c=db.contracts.find(x=>x.id===cid);
+  if(!c){ toast('Không tìm thấy dự án','error'); return; }
+  const toPCCC = !(c.pcccDesign===true); // đích đến
+  const fromName = toPCCC ? 'Quản lý dự án THI CÔNG' : 'Quản lý Thiết kế PCCC';
+  const toName   = toPCCC ? 'Quản lý Thiết kế PCCC' : 'Quản lý dự án THI CÔNG';
+  if(!confirm(`↔ CHUYỂN DỰ ÁN "${c.name||c.code||''}"\n\nTừ: ${fromName}\nSang: ${toName}\n\nToàn bộ dữ liệu (hợp đồng, công việc, tiến độ, vật tư, phiếu nhập, hồ sơ) được GIỮ NGUYÊN — dự án chỉ đổi sang sheet quản lý mới.\n\nXác nhận chuyển?`)) return;
+  c.pcccDesign = toPCCC ? true : false;
+  c.transferredAt = Date.now();
+  c.transferredBy = u.id;
+  saveDB(db);
+  if(typeof renderContractTabBody==='function') renderContractTabBody();
+  toast(`Đã chuyển dự án "${c.name||c.code}" sang ${toName}. Mở mục ${toName} để xem.`);
+};
+window.exportProjectJSON = function(cid){
+  const db=getDB();
+  const c=db.contracts.find(x=>x.id===cid);
+  if(!c){ toast('Không tìm thấy dự án','error'); return; }
+  const payload={
+    __type:'hrm_project_export', __version:1, exportedAt:Date.now(),
+    exportedBy:(currentUser()||{}).name||'',
+    contract:c,
+    tasks:(db.tasks||[]).filter(t=>t.projectId===cid),
+    importSlips:(db.importSlips||[]).filter(s=>s.contractId===cid)
+  };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url;
+  const safe=(c.code||c.name||c.id).replace(/[^a-zA-Z0-9_-]+/g,'_').slice(0,60);
+  a.download=`DuAn_${safe}_${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); URL.revokeObjectURL(url);
+  toast('Đã xuất file dự án: '+(c.name||c.code));
+};
+window.openImportProjectDialog = function(){
+  const u=currentUser();
+  if(!u || u.role==='employee'){ toast('Nhân viên không có quyền import dự án','error'); return; }
+  const input=document.createElement('input');
+  input.type='file'; input.accept='.json,application/json';
+  input.onchange=e=>{
+    const f=e.target.files[0]; if(!f) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{ try{ _importProjectFromJSON(JSON.parse(ev.target.result)); }
+      catch(err){ toast('File JSON không đọc được: '+err.message,'error'); } };
+    reader.readAsText(f,'utf-8');
+  };
+  input.click();
+};
+function _importProjectFromJSON(data){
+  if(!data || data.__type!=='hrm_project_export' || !data.contract){
+    toast('File không đúng định dạng "Export dự án" của phần mềm này','error'); return;
+  }
+  const db=getDB();
+  const src=data.contract;
+  const dup=db.contracts.find(c=>(c.code||'')===(src.code||'') && (src.code||''));
+  if(dup && !confirm('Đã có dự án cùng số HĐ "'+(src.code||'')+'" ('+(dup.name||'')+').\nVẫn import thành BẢN SAO mới?')) return;
+  // Tạo hợp đồng mới với id mới, giữ nguyên nội dung; gắn vào đúng sheet đang mở
+  const newC=JSON.parse(JSON.stringify(src));
+  newC.id=uid('c');
+  newC.importedAt=Date.now(); newC.importedBy=(currentUser()||{}).id;
+  if(dup) newC.name=(newC.name||'')+' (import)';
+  // Sheet hiện tại quyết định loại dự án nếu file không ghi rõ
+  if(newC.pcccDesign===undefined) newC.pcccDesign = !!window._pcccMode;
+  db.contracts.push(newC);
+  // Công việc thuộc dự án — cấp id mới, trỏ về dự án mới
+  let tCount=0;
+  (data.tasks||[]).forEach(t=>{
+    const nt=JSON.parse(JSON.stringify(t));
+    nt.id=uid('t'); nt.projectId=newC.id;
+    db.tasks.push(nt); tCount++;
+  });
+  // Phiếu nhập vật tư — cấp id mới, trỏ về dự án mới (materialId giữ nguyên vì phụ lục copy nguyên vẹn)
+  let sCount=0;
+  (data.importSlips||[]).forEach(s=>{
+    const ns=JSON.parse(JSON.stringify(s));
+    ns.id=uid('s'); ns.contractId=newC.id;
+    db.importSlips.push(ns); sCount++;
+  });
+  saveDB(db);
+  if(typeof renderContractTabBody==='function') renderContractTabBody();
+  toast(`Đã import dự án "${newC.name||newC.code}" — kèm ${tCount} công việc, ${sCount} phiếu nhập`);
 }
 window.ctApplySort = function(){
   _contractSort.field = document.getElementById('ct-sort-field').value;
@@ -6483,8 +7102,8 @@ window.ctSearchType = function(e){ ctFilterSuggest(e.target.value); };
 function ctFilterSuggest(q){
   const box=document.getElementById('ct-suggest'); if(!box) return;
   const db=getDB(); const u=currentUser();
-  let pool = db.contracts.slice();
-  // [REQ2] dự án chung cả 3 công ty
+  // [DA2] CHỈ gợi ý dự án thuộc sheet đang mở: Thi công ↔ không pcccDesign; Thiết kế PCCC ↔ pcccDesign
+  let pool = pcccScopeContracts(db.contracts.slice());
   const qLow=(q||'').toLowerCase().trim();
   if(qLow) pool = pool.filter(c=>
     (c.name||'').toLowerCase().includes(qLow) ||
@@ -6770,7 +7389,6 @@ function renderPopupMaterials(host, cid){
         <td class="right muted">${remaining}</td>
         <td><input class="mat-edit" data-mid="${m.id}" data-field="unitPriceContract" type="number" value="${m.unitPriceContract||0}" style="width:130px"></td>
         <td class="right" style="font-weight:600;color:#1e3a8a">${fmtVND(lineTotal)}</td>
-        <td class="right muted">${avgP?fmtVND(Math.round(avgP)):'—'}</td>
         <td><input class="mat-edit" data-mid="${m.id}" data-field="note" value="${escapeHtml(m.note||'')}" placeholder="Ghi chú"></td>
       </tr>`;
     }
@@ -6784,7 +7402,6 @@ function renderPopupMaterials(host, cid){
       <td class="right">${remaining}</td>
       <td class="right">${fmtVND(unitPriceRounded)}</td>
       <td class="right" style="font-weight:600;color:#1e3a8a">${fmtVND(lineTotal)}</td>
-      <td class="right" ${priceHigh?'style="background:#fee2e2;color:#991b1b;font-weight:700"':''}>${avgP?fmtVND(Math.round(avgP)):'—'}${priceHigh?' ⚠':''}</td>
       <td class="muted">${escapeHtml(m.note||lastSup||'')}</td>
     </tr>`;
   }).join('');
@@ -6834,16 +7451,16 @@ function renderPopupMaterials(host, cid){
         </div>
       </div>
     </div>`}
-    <div class="warn-text">⚠ Cảnh báo trực tiếp: (1) SL đã nhập vượt SL HĐ; (2) Đơn giá nhập TB cao hơn đơn giá HĐ — ô tô đỏ.${isEmp?' 👁 Bạn chỉ được xem phụ lục vật tư, không được sửa/xóa.':' 💡 Tích checkbox đầu dòng để chọn các vật tư cần sửa/xóa.'}</div>
+    <div class="warn-text">⚠ Cảnh báo trực tiếp: SL đã nhập vượt SL HĐ — ô tô đỏ.${isEmp?' 👁 Bạn chỉ được xem phụ lục vật tư, không được sửa/xóa.':' 💡 Tích checkbox đầu dòng để chọn các vật tư cần sửa/xóa.'}</div>
     <div class="tbl-wrap"><table style="font-size:12px" id="mat-tbl">
       <thead><tr>
         <th style="width:30px"></th>
         <th>STT</th><th>Tên hàng hóa</th><th>ĐVT</th><th>SL HĐ</th>
         <th>SL đã nhập</th><th>SL còn lại</th>
-        <th>Đơn giá HĐ</th><th>Thành tiền HĐ</th><th>Đơn giá nhập TB</th><th>Ghi chú / NCC</th>
+        <th>Đơn giá HĐ</th><th>Thành tiền HĐ</th><th>Ghi chú / NCC</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="11" class="muted center">Phụ lục trống. Bấm "🤖 Import thông minh" để nạp tự động từ file Excel/PDF/Ảnh.</td></tr>'}
-        <tr style="background:#1e3a8a;color:#fff;font-weight:700"><td colspan="8" class="right">TỔNG CỘNG (Σ Thành tiền HĐ):</td><td class="right">${fmtVND(totalContractValue)}</td><td colspan="2"></td></tr>
+      <tbody>${rows||'<tr><td colspan="10" class="muted center">Phụ lục trống. Bấm "🤖 Import thông minh" để nạp tự động từ file Excel/PDF/Ảnh.</td></tr>'}
+        <tr style="background:#1e3a8a;color:#fff;font-weight:700"><td colspan="8" class="right">TỔNG CỘNG (Σ Thành tiền HĐ):</td><td class="right">${fmtVND(totalContractValue)}</td><td></td></tr>
       </tbody>
     </table></div>
   `;
@@ -8415,7 +9032,7 @@ function renderSlipItems(){
   const opts = (c?.materials||[]).map(m=>`<option value="${m.id}">${escapeHtml(m.name)} (${escapeHtml(m.unit||'')})</option>`).join('');
   const rows = window._slipItems||[];
   host.innerHTML = `<div class="tbl-wrap"><table style="font-size:12px">
-    <thead><tr><th>#</th><th>Vật tư</th><th>Tên (nếu mới)</th><th>ĐVT</th><th>SL</th><th>Đơn giá</th><th>Thành tiền</th><th></th></tr></thead>
+    <thead><tr><th>#</th><th>Vật tư</th><th>Tên (nếu mới)</th><th>ĐVT</th><th>SL</th><th></th></tr></thead><!-- [R4] bỏ cột Đơn giá & Thành tiền -->
     <tbody>${rows.map((it,i)=>{
       const cMat = (c?.materials||[]).find(m=>m.id===it.materialId);
       const priceHigh = cMat && it.unitPrice > (cMat.unitPriceContract||0);
@@ -8428,9 +9045,7 @@ function renderSlipItems(){
         <td><input value="${escapeHtml(it.materialName||'')}" oninput="updateSlipItem(${i},'materialName',this.value)" ${it.materialId?'disabled style="background:#f1f5f9"':''}></td>
         <td><input value="${escapeHtml(it.unit||'')}" oninput="updateSlipItem(${i},'unit',this.value)" style="width:70px" ${it.materialId?'disabled style="background:#f1f5f9"':''}></td>
         <td><input type="number" value="${it.qty||''}" oninput="updateSlipItem(${i},'qty',this.value)" style="width:80px"></td>
-        <td><input type="number" value="${it.unitPrice||''}" oninput="updateSlipItem(${i},'unitPrice',this.value)" style="width:120px">${priceHigh?'<div class="hint" style="color:#dc2626">⚠ &gt; giá HĐ</div>':''}</td>
-        <td class="right"><b>${fmtVND((Number(it.qty)||0)*(Number(it.unitPrice)||0))}</b></td>
-        <td><button class="btn sm danger" type="button" onclick="removeSlipItem(${i})">🗑</button></td>
+        <td><button class="btn sm danger" type="button" onclick="removeSlipItem(${i})">🗑</button></td><!-- [R4] bỏ cột Đơn giá & Thành tiền -->
       </tr>`;
     }).join('')}</tbody></table></div>`;
 }
