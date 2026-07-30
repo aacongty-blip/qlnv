@@ -634,7 +634,11 @@ function saveDB(db){
   _db = db;
   if(window._firebaseReady && _fbConnected){
     _justWrote = true; // đánh dấu trước khi ghi
-    window._fbSet(FB_PATH, db)
+    // [FIX-FB] Firebase Realtime DB TỪ CHỐI toàn bộ lệnh set() nếu dữ liệu chứa 'undefined'
+    // ở bất kỳ đâu → làm sạch bằng JSON round-trip (undefined bị loại bỏ tự nhiên).
+    let _cleanDb = db;
+    try{ _cleanDb = JSON.parse(JSON.stringify(db)); }catch(e){ console.error('[saveDB] sanitize err', e); }
+    window._fbSet(FB_PATH, _cleanDb)
       .then(()=> console.log('[saveDB] OK — v:', _writeVersion, 'users:', db.users?.length))
       .catch(e=>{ _justWrote = false; console.error('[saveDB] FAIL', e); });
   } else {
@@ -1139,6 +1143,23 @@ function render(){
   if(typeof chatBoot==='function') chatBoot();
 }
 function renderFileStatusBar(){ /* đã xóa — Firebase tự đồng bộ, không cần hiển thị */ }
+/* [NOTIF] Đếm tổng yêu cầu CHẤM CÔNG chờ duyệt (giờ vào, giờ về, OT, lý do muộn, đơn nghỉ) */
+function _countAttPending(){
+  const db=getDB(); let n=0;
+  Object.values(db.attendance||{}).forEach(byPeriod=>{
+    Object.values(byPeriod||{}).forEach(monthRec=>{
+      Object.values(monthRec||{}).forEach(r=>{
+        if(!r || typeof r!=='object') return;
+        if(r.pendingCheckIn) n++;
+        if(r.pendingCheckOut) n++;
+        if(r.otReq && r.otReq.status==='pending') n++;
+        if(r.lateReason && r.lateReason.status==='pending') n++;
+        if(r.leaveReq && r.leaveReq.status==='pending') n++;
+      });
+    });
+  });
+  return n;
+}
 function renderNav(u){
   const items=[];
   // "Theo dõi công việc" được đưa lên ĐẦU tab bên trái cho admin/manager/employee
@@ -1188,9 +1209,11 @@ function renderNav(u){
       <span class="ico">💬</span> Tin nhắn
       <span id="navChatBadge" style="display:none">0</span>
     </div>`;
+  // [NOTIF] Người được quyền duyệt chấm công thấy SỐ YÊU CẦU CHỜ ngay trên menu
+  const _attPend = canApproveAttendance() ? _countAttPending() : 0;
   return items.map(it=>
     `<div class="nav-item ${currentView===it.k?'active':''}" onclick="navTo('${it.k}')">
-      <span class="ico">${it.i}</span> ${it.t}
+      <span class="ico">${it.i}</span> ${it.t}${(it.k==='dashboard'&&_attPend>0)?` <span style="background:#dc2626;color:#fff;border-radius:99px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px" title="${_attPend} yêu cầu chấm công đang chờ bạn duyệt">${_attPend}</span>`:''}
     </div>`).join('') + chatItem;
 }
 function roleBadge(r){
@@ -1720,7 +1743,8 @@ function viewDashboard(main, u){
   }).join('');
 
   // [PATCH] Card tự chấm công cho NV + danh sách chờ duyệt cho cấp quản lý
-  const selfCheckInHtml = (u.role==='employee') ? renderSelfCheckInCard(u, db) : '';
+  // [B3] Trưởng phòng / Quản lý cũng phải tự chấm công như nhân viên (chỉ Admin không cần)
+  const selfCheckInHtml = (u.role!=='admin') ? renderSelfCheckInCard(u, db) : '';
   const pendingApprovalHtml = canApproveAttendance() ? renderAttendancePendingList(u, db) : ''; // [PQ2] chỉ người được phân quyền (và admin) thấy thẻ duyệt
 
   main.innerHTML=`
@@ -1873,12 +1897,26 @@ function renderAttGrid(empId, period, isReadOnly){
     const cursor = isReadOnly ? 'default' : 'pointer';
     const textColor = isPending ? '#92400e' : (v ? '#fff' : '#0f172a');
     const auditTitle = (!isReadOnly && cellRec) ? _attAuditText(cellRec, db) : '';
+    // [B4] Trạng thái duyệt của từng đề xuất trong ngày: 🟢 giờ vào · 🔴 giờ về · ⏱ tăng ca · 📝 lý do muộn · 🌴 nghỉ
+    let stIcons='';
+    if(cellRec){
+      const ic=[];
+      const mark=(ok,pend)=> pend?'⏳':(ok?'✓':'✗');
+      if(cellRec.checkIn) ic.push('🟢'+(cellRec.pendingCheckIn?'⏳':'✓'));
+      if(cellRec.checkOut) ic.push('🔴'+(cellRec.pendingCheckOut?'⏳':'✓'));
+      if(cellRec.otReq) ic.push('⏱'+(cellRec.otReq.status==='pending'?'⏳':(cellRec.otReq.status==='approved'?'✓':'✗')));
+      else if(Number(cellRec.ot)>0) ic.push('⏱✓');
+      if(cellRec.lateReason) ic.push('📝'+(cellRec.lateReason.status==='pending'?'⏳':(cellRec.lateReason.status==='approved'?'✓':'✗')));
+      if(cellRec.leaveReq) ic.push('🌴'+(cellRec.leaveReq.status==='pending'?'⏳':(cellRec.leaveReq.status==='approved'?'✓':'✗')));
+      if(ic.length) stIcons='<div style="font-size:8.5px;margin-top:1px;background:rgba(255,255,255,.55);color:#0f172a;border-radius:3px;padding:0 2px;line-height:1.5" title="Trạng thái duyệt: 🟢 giờ vào · 🔴 giờ về · ⏱ tăng ca · 📝 lý do muộn · 🌴 nghỉ — ✓ đã duyệt · ⏳ chờ duyệt · ✗ từ chối">'+ic.join(' ')+'</div>';
+    }
     cells += `<div ${auditTitle?`title="${escapeHtml(auditTitle)}"`:''} style="padding:6px 4px;border:${border};border-radius:6px;background:${bg};color:${textColor};font-weight:${v?700:400};${isSun?'opacity:.5':''}${isReadOnly?';opacity:.85':''};text-align:center">
       <button ${clickHandler} ${isReadOnly?'disabled':''} style="background:none;border:none;color:inherit;cursor:${cursor};width:100%;font-weight:inherit">
         <div style="font-size:14px">${d}</div>
         <div style="font-size:11px">${v||'—'}</div>
       </button>
       ${badge}
+      ${stIcons}
       ${isReadOnly?`<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px">OT: <b>${ot||0}h</b></div>`:`<input type="number" min="0" max="12" step="0.5" value="${ot||''}" onchange="updateAttOT('${empId}','${period}',${d},this.value)" placeholder="OT" title="Giờ tăng ca" style="width:100%;font-size:10px;padding:1px 2px;margin-top:2px;border:1px solid rgba(255,255,255,.4);border-radius:4px;background:rgba(255,255,255,.3);color:inherit;text-align:center" onclick="event.stopPropagation()">`}
     </div>`;
   }
@@ -2038,7 +2076,10 @@ function renderSelfCheckInCard(u, db){
           <div style="margin-top:6px;font-size:14px">Bạn đã chấm công lúc <b>${escapeHtml(tIn)}</b> ${lateBadge}</div>
           <div class="hint" style="color:#b45309">⏳ Đang chờ Trưởng phòng / Quản lý xác nhận.</div>
         </div>
-        <button class="btn outline" onclick="cancelSelfCheckIn()">↩ Hủy chấm công</button>
+        <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+          <button class="btn" disabled style="padding:12px 24px;font-size:15px;opacity:.4;cursor:not-allowed">🟢 Đã chấm công hôm nay</button>
+          <button class="btn outline sm" onclick="cancelSelfCheckIn()">↩ Hủy chấm công (chấm lại)</button>
+        </div>
       </div>`;
   } else {
     // Đã được duyệt
@@ -2052,8 +2093,9 @@ function renderSelfCheckInCard(u, db){
         <div>
           <div style="font-size:13px;color:#64748b">Hôm nay · ${escapeHtml(todayStr)}</div>
           <div style="margin-top:6px;font-size:14px">✅ Đã chấm công lúc <b>${escapeHtml(tIn)}</b> · Trạng thái: <b>${escapeHtml(codeLabel)}</b> ${lateBadge}</div>
-          <div class="hint" style="color:#16a34a">✓ Đã được Quản lý xác nhận.</div>
+          <div class="hint" style="color:#16a34a">✓ Đã được người chấm công xác nhận.</div>
         </div>
+        <button class="btn" disabled style="padding:12px 24px;font-size:15px;opacity:.4;cursor:not-allowed">🟢 Đã chấm công hôm nay</button>
       </div>`;
   }
   // [CC2] TRÌNH BÀY LÝ DO ĐẾN MUỘN — nếu QL chấp thuận thì hôm đó KHÔNG tính muộn
@@ -2670,7 +2712,7 @@ function renderAttendancePendingList(u, db){
 // NV tự chấm công hôm nay
 window.selfCheckIn = async function(){
   const u = currentUser(); if(!u) return;
-  if(u.role!=='employee'){ toast('Chỉ nhân viên mới dùng chức năng tự chấm công','error'); return; }
+  if(u.role==='admin'){ toast('Admin không cần tự chấm công','warn'); return; } // [B3] manager/pm chấm công như NV
   const db = getDB();
   const now = new Date();
   const period = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
@@ -2687,7 +2729,6 @@ window.selfCheckIn = async function(){
   const newRec = {
     code: 'P',
     ot: (existing && existing.ot) || 0,
-    otReq: (existing && existing.otReq) || undefined, // [YC1] giữ đăng ký OT nếu có
     checkIn: ts,
     late: isLate,
     lateMins,
@@ -2695,6 +2736,10 @@ window.selfCheckIn = async function(){
     submittedBy: u.id,
     submittedAt: ts
   };
+  // [FIX-FB] GIỮ đăng ký OT/lý do/đơn nghỉ nếu có — gán CÓ ĐIỀU KIỆN, tuyệt đối không đưa
+  // giá trị undefined vào bản ghi (Firebase thật sẽ TỪ CHỐI toàn bộ lệnh ghi nếu gặp undefined)
+  if(existing && existing.otReq) newRec.otReq = existing.otReq;
+  if(existing && existing.leaveReq) newRec.leaveReq = existing.leaveReq;
   _setAttRec(db, u.id, period, day, newRec);
   await saveDB(db);
   // [MUON] Nhắc nhở phân 2 mức: <1 tiếng = xác nhận đi muộn; >1 tiếng = đi muộn + chỉ tính 1/2 ngày công
@@ -2709,7 +2754,7 @@ window.selfCheckIn = async function(){
 // NV hủy chấm công của hôm nay khi chưa được duyệt
 window.cancelSelfCheckIn = async function(){
   const u = currentUser(); if(!u) return;
-  if(u.role!=='employee'){ return; }
+  if(u.role==='admin'){ return; } // [B3]
   if(!confirm('Hủy bỏ chấm công hôm nay và chấm lại?')) return;
   const db = getDB();
   const now = new Date();
@@ -6032,8 +6077,8 @@ window.saveCompanyWorkTime = function(){
     const en = enRaw ? _normalizeTimeStr(enRaw) : '';
     if((stRaw && !st) || (enRaw && !en)){ invalid = co.code; return; }
     db.settings.companyWorkHours[co.id] = {
-      workStartTime: st || undefined,
-      workEndTime:   en || undefined,
+      workStartTime: st || '',
+      workEndTime:   en || '',
       lateGraceMins: gr===''||gr==null ? undefined : Math.max(0, Number(gr)||0)
     };
   });
@@ -6799,6 +6844,12 @@ function renderContractTabBody(){
    SHEET 1 — Dashboard hợp đồng
    ============================================================ */
 /* Lọc theo phạm vi: PCCC chỉ thấy dự án thiết kế PCCC; Quản lý dự án loại trừ dự án PCCC */
+/* [GD-TK] Nhãn giai đoạn thiết kế của dự án PCCC */
+function designStageBadge(v){
+  if(v==='tkcs') return '<span class="badge" style="background:#dbeafe;color:#1e40af">TK cơ sở</span>';
+  if(v==='tktc') return '<span class="badge" style="background:#dcfce7;color:#166534">TK bản vẽ thi công</span>';
+  return '<span class="muted">—</span>';
+}
 function pcccScopeContracts(list){
   return window._pcccMode ? list.filter(c=>c.pcccDesign===true) : list.filter(c=>!c.pcccDesign);
 }
@@ -6910,6 +6961,7 @@ function renderContractDashboard(host){
           <th>Chủ đầu tư</th>
           <th>Số hợp đồng</th>
           <th>Công ty thực hiện</th>
+          ${window._pcccMode?'<th>Giai đoạn thiết kế</th>':''}
           <th class="right">Giá trị hợp đồng</th>
           <th>Ngày bắt đầu</th>
           <th>Ngày kết thúc</th>
@@ -6935,13 +6987,14 @@ function renderContractDashboard(host){
             <td>${escapeHtml(c.ownerName||'—')}</td>
             <td>${escapeHtml(c.code||'')}</td>
             <td><span class="badge co">${getCompany(c.companyId).code}</span></td>
+            ${window._pcccMode?`<td>${designStageBadge(c.designStage)}</td>`:''}
             <td class="right"><b>${fmtVND(cc.value)}</b></td>
             <td>${fmtDate(c.signDate)}</td>
             <td>${fmtDate(c.completeDate)}${stat==='soon'?' ⚠':''}${stat==='overdue'?' 🚨':''}</td>
             <td>${completionBadge(c.completionStatus)}</td>
             ${actionsCell}
           </tr>`;
-        }).join('') || `<tr><td colspan="10" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
+        }).join('') || `<tr><td colspan="${window._pcccMode?11:10}" class="empty">${_stab==='done'?'Chưa có dự án hoàn thành.':'Không có dự án đang triển khai. Bấm + Thêm dự án để bắt đầu.'}</td></tr>`}</tbody>
       </table>
     </div>
   `;
@@ -7176,7 +7229,7 @@ function renderContractPopupWindow(cid){
     <div style="padding:14px 20px;background:linear-gradient(135deg,#1e3a8a,#0f172a);color:#fff">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
         <div>
-          <div style="font-size:11px;opacity:.8">🏗 QUẢN LÝ DỰ ÁN</div>
+          <div style="font-size:11px;opacity:.8">${c.pcccDesign===true?'📐 DỰ ÁN THIẾT KẾ PCCC'+(c.designStage?' · '+(c.designStage==='tkcs'?'GIAI ĐOẠN: THIẾT KẾ CƠ SỞ':'GIAI ĐOẠN: TK BẢN VẼ THI CÔNG'):''):'🏗 QUẢN LÝ DỰ ÁN THI CÔNG'}</div>
           <h1 style="font-size:18px;margin:2px 0">${escapeHtml(c.name||'')}</h1>
           <div style="font-size:12px;opacity:.85">Số HĐ: <b>${escapeHtml(c.code||'')}</b> · Công ty: <b>${escapeHtml(getCompany(c.companyId).code)}</b> · Bắt đầu: ${fmtDate(c.signDate)} · Kết thúc: ${fmtDate(c.completeDate)} · ${completionBadge(c.completionStatus)}</div>
         </div>
@@ -7190,18 +7243,28 @@ function renderContractPopupWindow(cid){
       📍 <b>Bạn đang xem:</b> <span id="pop-sheet-name"></span>
     </div>
     <div class="tabs" style="padding:0 20px;margin-top:0">
+      ${c.pcccDesign===true?`
+      <button class="tab" data-tab="progress"  onclick="switchPopupTab('progress')">📅 1. Tiến độ & Công việc thiết kế</button>
+      <button class="tab" data-tab="info"      onclick="switchPopupTab('info')">📋 2. Thông tin đầu vào DA</button>
+      <button class="tab" data-tab="pccc"      onclick="switchPopupTab('pccc')">📁 3. Hồ sơ dự án</button>
+      <button class="tab" data-tab="payDocs"   onclick="switchPopupTab('payDocs')">💼 4. Hồ sơ thanh toán</button>
+      `:`
       <button class="tab" data-tab="progress"  onclick="switchPopupTab('progress')">📅 1. Tiến độ & Công việc thi công</button>
       <button class="tab" data-tab="info"      onclick="switchPopupTab('info')">📋 2. Đầu vào thông tin DA & HĐ</button>
       <button class="tab" data-tab="pccc"      onclick="switchPopupTab('pccc')">📁 3. Hồ sơ dự án</button>
       <button class="tab" data-tab="mat"       onclick="switchPopupTab('mat')">📦 4. Vật tư & Thiết bị</button>
       <button class="tab" data-tab="guarantee" onclick="switchPopupTab('guarantee')">🏦 5. Bảo lãnh ngân hàng</button>
       <button class="tab" data-tab="payDocs"   onclick="switchPopupTab('payDocs')">💼 6. Hồ sơ thanh toán</button>
+      `}
     </div>
     <div id="pop-body" style="padding:14px 20px"></div>
   `;
   switchPopupTab('progress');
 }
 window.switchPopupTab = function(t){
+  // [GD-TK] Dự án THIẾT KẾ PCCC không có sheet Vật tư & Bảo lãnh
+  const _c=getDB().contracts.find(x=>x.id===_popupCid);
+  if(_c && _c.pcccDesign===true && (t==='mat'||t==='guarantee'||t==='materials'||t==='slips'||t==='extras'||t==='suppliers')) t='progress';
   _popupTab = t;
   const labels = {
     progress:'📅 1. Tiến độ & Công việc thi công (Gantt + Kanban + % tiến độ + cảnh báo chậm)',
@@ -7377,6 +7440,8 @@ function renderPopupMaterials(host, cid){
     const qtyExceed = imported > (Number(m.qtyContract)||0);
     const unitPriceRounded = Math.round(Number(m.unitPriceContract)||0);
     const lineTotal = Math.round((Number(m.qtyContract)||0) * (Number(m.unitPriceContract)||0));
+    // [C1] Thành tiền đã nhập = SL đã nhập × đơn giá HĐ
+    const importedValue = Math.round(imported * (Number(m.unitPriceContract)||0));
     const isEditing = _matEditMode && _matEditing.has(m.id);
     if(isEditing){
       return `<tr style="background:#fef9c3">
@@ -7389,10 +7454,11 @@ function renderPopupMaterials(host, cid){
         <td class="right muted">${remaining}</td>
         <td><input class="mat-edit" data-mid="${m.id}" data-field="unitPriceContract" type="number" value="${m.unitPriceContract||0}" style="width:130px"></td>
         <td class="right" style="font-weight:600;color:#1e3a8a">${fmtVND(lineTotal)}</td>
+        <td class="right muted">${fmtVND(importedValue)}</td>
         <td><input class="mat-edit" data-mid="${m.id}" data-field="note" value="${escapeHtml(m.note||'')}" placeholder="Ghi chú"></td>
       </tr>`;
     }
-    return `<tr>
+    return `<tr ${m.isCustom?'style="color:#1d4ed8"':''}>
       <td>${isEmp?'':`<input type="checkbox" class="mat-chk" data-mid="${m.id}">`}</td>
       <td>${i+1}</td>
       <td>${escapeHtml(m.name)}</td>
@@ -7402,11 +7468,14 @@ function renderPopupMaterials(host, cid){
       <td class="right">${remaining}</td>
       <td class="right">${fmtVND(unitPriceRounded)}</td>
       <td class="right" style="font-weight:600;color:#1e3a8a">${fmtVND(lineTotal)}</td>
-      <td class="muted">${escapeHtml(m.note||lastSup||'')}</td>
+      <td class="right" style="font-weight:600;color:#0f766e">${fmtVND(importedValue)}</td>
+      <td class="muted">${escapeHtml(m.note||lastSup||'')}${m.isCustom?' <span class="badge" style="background:#dbeafe;color:#1d4ed8;font-size:10px">➕ ngoài HĐ</span>':''}</td>
     </tr>`;
   }).join('');
   // Tính tổng giá trị phụ lục (làm tròn đến đơn vị)
   const totalContractValue = Math.round(materials.reduce((s,m)=>s + (Number(m.qtyContract)||0) * (Number(m.unitPriceContract)||0), 0));
+  // [C1] Σ Thành tiền đã nhập = Σ(SL đã nhập × đơn giá HĐ)
+  const totalImportedByContractPrice = Math.round(materials.reduce((s,m)=>s + getImportedQty(cid, m.id) * (Number(m.unitPriceContract)||0), 0));
   const totalImportedValue = materials.reduce((s,m)=>{
     let totQ=0,totV=0;
     db.importSlips.filter(sl=>sl.contractId===cid && sl.confirmed).forEach(sl=>{
@@ -7424,6 +7493,7 @@ function renderPopupMaterials(host, cid){
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
       <h3 style="margin:0">📦 Phụ lục vật tư (${materials.length} mục)${isEmp?' <span class="muted" style="font-size:12px;font-weight:400">— chỉ xem</span>':''}</h3>
       ${isEmp?'':`<div>
+        <button class="btn sm success" onclick="addCustomMatRow('${cid}')" title="Thêm dòng vật tư mới (ngoài hợp đồng) — dòng thêm sẽ hiển thị chữ MÀU XANH để phân biệt">➕ Thêm dòng vật tư</button>
         <button class="btn sm" onclick="smartImportMaterials('${cid}')">🤖 Import thông minh từ Excel/PDF/Ảnh</button>
         <button class="btn sm success" onclick="openContractForm('${cid}')">✏ Mở form đầy đủ</button>
       </div>`}
@@ -7451,16 +7521,16 @@ function renderPopupMaterials(host, cid){
         </div>
       </div>
     </div>`}
-    <div class="warn-text">⚠ Cảnh báo trực tiếp: SL đã nhập vượt SL HĐ — ô tô đỏ.${isEmp?' 👁 Bạn chỉ được xem phụ lục vật tư, không được sửa/xóa.':' 💡 Tích checkbox đầu dòng để chọn các vật tư cần sửa/xóa.'}</div>
+    <div class="warn-text">⚠ Cảnh báo trực tiếp: SL đã nhập vượt SL HĐ — ô tô đỏ. 🔵 Dòng CHỮ XANH kèm nhãn "➕ ngoài HĐ" là vật tư người dùng tự bổ sung, không thuộc phụ lục hợp đồng gốc.${isEmp?' 👁 Bạn chỉ được xem phụ lục vật tư, không được sửa/xóa.':' 💡 Tích checkbox đầu dòng để chọn các vật tư cần sửa/xóa.'}</div>
     <div class="tbl-wrap"><table style="font-size:12px" id="mat-tbl">
       <thead><tr>
         <th style="width:30px"></th>
         <th>STT</th><th>Tên hàng hóa</th><th>ĐVT</th><th>SL HĐ</th>
         <th>SL đã nhập</th><th>SL còn lại</th>
-        <th>Đơn giá HĐ</th><th>Thành tiền HĐ</th><th>Ghi chú / NCC</th>
+        <th>Đơn giá HĐ</th><th>Thành tiền HĐ</th><th>Thành tiền ĐÃ NHẬP</th><th>Ghi chú / NCC</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="10" class="muted center">Phụ lục trống. Bấm "🤖 Import thông minh" để nạp tự động từ file Excel/PDF/Ảnh.</td></tr>'}
-        <tr style="background:#1e3a8a;color:#fff;font-weight:700"><td colspan="8" class="right">TỔNG CỘNG (Σ Thành tiền HĐ):</td><td class="right">${fmtVND(totalContractValue)}</td><td></td></tr>
+      <tbody>${rows||'<tr><td colspan="11" class="muted center">Phụ lục trống. Bấm "🤖 Import thông minh" để nạp tự động từ file Excel/PDF/Ảnh, hoặc "➕ Thêm dòng vật tư".</td></tr>'}
+        <tr style="background:#1e3a8a;color:#fff;font-weight:700"><td colspan="8" class="right">TỔNG CỘNG:</td><td class="right" title="Σ Thành tiền HĐ">${fmtVND(totalContractValue)}</td><td class="right" style="color:#a7f3d0" title="Σ Thành tiền đã nhập = Σ(SL đã nhập × đơn giá HĐ)">${fmtVND(totalImportedByContractPrice)}</td><td></td></tr>
       </tbody>
     </table></div>
   `;
@@ -7468,6 +7538,26 @@ function renderPopupMaterials(host, cid){
   document.querySelectorAll('.mat-chk').forEach(c=>c.addEventListener('change', updateMatSelCount));
   updateMatSelCount();
 }
+/* [C2] Thêm 1 hoặc nhiều dòng vật tư NGOÀI HỢP ĐỒNG — chữ màu xanh, cùng format & công thức */
+window.addCustomMatRow = function(cid){
+  if(currentUser()?.role==='employee'){ toast('Bạn chỉ được xem, không được thêm dòng','error'); return; }
+  const nStr = prompt('Thêm bao nhiêu dòng vật tư mới?','1');
+  if(nStr===null) return;
+  const n = Math.max(1, Math.min(50, Number(nStr)||1));
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  c.materials = c.materials||[];
+  const newIds=[];
+  for(let i=0;i<n;i++){
+    const m={id:uid('m'), name:'', unit:'', qtyContract:0, unitPriceContract:0, note:'', isCustom:true};
+    c.materials.push(m); newIds.push(m.id);
+  }
+  saveDB(db);
+  // Vào thẳng chế độ sửa cho các dòng vừa thêm để người dùng nhập ngay
+  _matEditMode = true;
+  _matEditing = new Set(newIds);
+  renderPopupBody();
+  toast('Đã thêm '+n+' dòng vật tư (ngoài HĐ) — nhập thông tin rồi bấm 💾 Lưu / Cập nhật. Dòng tự thêm hiển thị CHỮ XANH.');
+};
 window.toggleAllMatChk = function(){
   const all = document.getElementById('mat-chk-all').checked;
   document.querySelectorAll('.mat-chk').forEach(c=>c.checked=all);
@@ -7546,7 +7636,6 @@ function renderPopupSlips(host, cid){
       <td>${escapeHtml(s.supplierName||'')}</td>
       <td>${escapeHtml(s.requesterName||'')}</td>
       <td class="center">${(s.items||[]).length}</td>
-      <td class="right">${fmtVND(s.totalValue||0)}</td>
       <td>${statusBadge}</td>
       <td>
         <button class="btn sm outline" onclick="viewSlipDetail('${s.id}')">👁 Xem</button>
@@ -7559,7 +7648,7 @@ function renderPopupSlips(host, cid){
         ${(!isEmp || !confirmed) ? `<button class="btn sm danger" onclick="deleteImportSlipPopup('${s.id}','${cid}')">🗑</button>` : ''}
       </td>
     </tr>`;
-  }).join('') || '<tr><td colspan="8" class="empty">Chưa có phiếu nhập nào cho dự án này</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="empty">Chưa có phiếu nhập nào cho dự án này</td></tr>';
   host.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
       <h3 style="margin:0">📥 Phiếu nhập vật tư (${slips.length})</h3>
@@ -7570,7 +7659,7 @@ function renderPopupSlips(host, cid){
     </div>
     ${pendingCount>0 ? `<div class="warn-text">⏳ Có <b>${pendingCount}</b> phiếu nhập đang chờ xác nhận. ${canAppr?'Bấm <b>✓ Xác nhận</b> để duyệt phiếu — chỉ khi xác nhận, phiếu mới được xuất Excel/Word/PDF và SL nhập mới cộng dồn vào phụ lục vật tư.':'Trưởng phòng/Quản lý/Admin cần xác nhận phiếu trước khi xuất file và cập nhật SL.'}</div>`:''}
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Số phiếu</th><th>Ngày nhập</th><th>NCC</th><th>Người đề nghị</th><th>Số dòng</th><th>Giá trị</th><th>Trạng thái</th><th></th></tr></thead>
+      <thead><tr><th>Số phiếu</th><th>Ngày nhập</th><th>NCC</th><th>Người đề nghị</th><th>Số dòng</th><th>Trạng thái</th><th></th></tr></thead><!-- [C3] bỏ cột Giá trị lần nhập -->
       <tbody>${rows}</tbody>
     </table></div>
   `;
@@ -7997,6 +8086,14 @@ window.openContractForm = function(contractId){
         <div class="field"><label>Trạng thái HT</label>
           <select id="cf-comp">${COMPLETION_STATUS.map(s=>`<option value="${s.v}" ${c?.completionStatus===s.v?'selected':''}>${s.label}</option>`).join('')}</select>
         </div>
+        ${(window._pcccMode || c?.pcccDesign)?`
+        <div class="field"><label>📐 Giai đoạn thiết kế *</label>
+          <select id="cf-stage">
+            <option value="">— Chọn giai đoạn —</option>
+            <option value="tkcs" ${c?.designStage==='tkcs'?'selected':''}>Thiết kế cơ sở (TKCS)</option>
+            <option value="tktc" ${c?.designStage==='tktc'?'selected':''}>Thiết kế bản vẽ thi công</option>
+          </select>
+        </div>`:''}
         <div class="field"><label>Ngày bắt đầu (ngày ký HĐ) *</label><input id="cf-sign" type="date" value="${c?.signDate?new Date(c.signDate).toISOString().slice(0,10):''}"></div>
         <div class="field"><label>Ngày kết thúc (dự kiến) *</label><input id="cf-done" type="date" value="${c?.completeDate?new Date(c.completeDate).toISOString().slice(0,10):''}"></div>
         <div class="field"><label>📍 Ngày bàn giao mặt bằng</label><input id="cf-handover" type="date" value="${c?.handoverDate?new Date(c.handoverDate).toISOString().slice(0,10):''}"></div>
@@ -8759,6 +8856,9 @@ window.saveContractForm = function(id){
   c.name=name; c.code=code;
   c.companyId=v('cf-company');
   c.completionStatus=v('cf-comp');
+  // [GD-TK] Giai đoạn thiết kế (chỉ có với dự án thiết kế PCCC)
+  const stageEl=document.getElementById('cf-stage');
+  if(stageEl) c.designStage=stageEl.value;
   c.settlementStatus=v('cf-set');
   const sd=v('cf-sign'), dd=v('cf-done');
   c.signDate = sd?new Date(sd).getTime():null;
