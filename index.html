@@ -830,10 +830,69 @@ function currentUser(){
 /* ============================================================
    HELPERS
    ============================================================ */
+/* ============================================================
+   [v18-1] ĐỊNH DẠNG TIỀN TOÀN CỤC
+   • Hiển thị: phân cách hàng nghìn / triệu / tỷ bằng dấu ".", KHÔNG lấy số
+     thập phân, làm tròn đến hàng ĐƠN VỊ.
+   • Nhập liệu: ô nhập có thuộc tính data-money sẽ TỰ ĐỘNG chèn dấu "."
+     ngay khi người dùng gõ, để dễ quan sát hàng nghìn/triệu/tỷ.
+   • Khi code đọc el.value vẫn nhận SỐ THÔ (không có dấu chấm) nên toàn bộ
+     phép tính cũ giữ nguyên, không phải sửa từng chỗ.
+   ============================================================ */
 function fmtVND(n){
-  if(n===null||n===undefined||isNaN(n)) return '';
-  return Number(n).toLocaleString('vi-VN')+' đ';
+  if(n===null||n===undefined||n===''||isNaN(Number(n))) return '';
+  return Math.round(Number(n)).toLocaleString('vi-VN')+' đ';
 }
+/* Chỉ số, không kèm "đ" — dùng cho value của ô nhập tiền */
+function fmtMoney(n){
+  if(n===null||n===undefined||n===''||isNaN(Number(n))) return '';
+  return Math.round(Number(n)).toLocaleString('vi-VN');
+}
+/* Bóc mọi ký tự phân cách, trả về chuỗi số thô */
+function moneyDigits(s){
+  s = String(s===null||s===undefined?'':s);
+  const neg = /^\s*-/.test(s);
+  const d = s.replace(/[^\d]/g,'');
+  if(!d) return neg?'-':'';
+  return (neg?'-':'')+String(Number(d));
+}
+/* Chuỗi hiển thị có dấu chấm phân cách */
+function moneyDisplay(s){
+  const raw = moneyDigits(s);
+  if(raw===''||raw==='-') return raw;
+  return Number(raw).toLocaleString('vi-VN');
+}
+/* Sinh nhanh HTML 1 ô nhập tiền */
+function moneyInputHtml(attrs, value){
+  return `<input type="text" inputmode="numeric" data-money value="${fmtMoney(value)}" ${attrs||''}>`;
+}
+(function _installMoneyInput(){
+  if(typeof HTMLInputElement==='undefined') return;
+  const D = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');
+  if(!D || !D.get || !D.set) return;
+  window._rawInputVal = el=>D.get.call(el);
+  window._rawInputSet = (el,v)=>D.set.call(el,v);
+  const isMoney = el => !!(el && el.hasAttribute && el.hasAttribute('data-money'));
+  Object.defineProperty(HTMLInputElement.prototype,'value',{
+    configurable:true, enumerable:D.enumerable,
+    get(){ const v=D.get.call(this); return isMoney(this)?moneyDigits(v):v; },
+    set(v){ if(isMoney(this)){ D.set.call(this, moneyDisplay(v)); return; } D.set.call(this, v); }
+  });
+  // Định dạng NGAY khi gõ (capture=true → chạy trước mọi oninput có sẵn)
+  document.addEventListener('input', function(e){
+    const el=e.target;
+    if(!el || el.tagName!=='INPUT' || !isMoney(el)) return;
+    const cur = D.get.call(el);
+    const disp = moneyDisplay(cur);
+    if(disp===cur) return;
+    let caret = el.selectionStart;
+    if(caret===null||caret===undefined) caret = cur.length;
+    const fromEnd = cur.length - caret;
+    D.set.call(el, disp);
+    const pos = Math.max(0, disp.length - fromEnd);
+    try{ el.setSelectionRange(pos,pos); }catch(_){}
+  }, true);
+})();
 function fmtDate(ts){
   if(!ts) return '';
   const d=new Date(ts);
@@ -888,6 +947,30 @@ function ratingOf(score){
 function escapeHtml(s){
   if(s===null||s===undefined) return '';
   return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+/* ============================================================
+   [v18-4] QUY ĐỔI CÔNG THEO SỐ GIỜ LÀM THỰC TẾ
+   Nhân viên bấm xác nhận giờ về sớm hơn 8 tiếng ⇒ ngày công đó KHÔNG được
+   tính đủ 1 công mà tính theo tỷ lệ: công = số giờ làm / 8 tiếng.
+   Việc tính hoàn toàn TỰ ĐỘNG dựa vào giờ vào và giờ về đã chấm.
+   ============================================================ */
+const STD_WORK_HOURS = 8;
+function attDayCredit(v){
+  let code='', worked=null, pending=false;
+  if(typeof v==='object' && v!==null){
+    code = v.code||'';
+    pending = !!v.pendingCheckIn;
+    if(code==='P' && v.late && Number(v.lateMins)>60 && !v.lateExcused) code='H';
+    if(v.checkIn && v.checkOut) worked = Number(v.workedHours)||0;
+  } else { code = v||''; }
+  if(pending) return {code, credit:0, ratio:null, worked, pending:true};
+  let credit = code==='P' ? 1 : (code==='H' ? 0.5 : 0);
+  let ratio = null;
+  if(credit>0 && worked!==null && worked<STD_WORK_HOURS){
+    ratio = Math.round((worked/STD_WORK_HOURS)*100)/100;
+    credit = Math.min(credit, ratio);
+  }
+  return {code, credit:Math.round(credit*100)/100, ratio, worked, pending:false};
 }
 /* [YC6] Làm tròn 2 chữ số thập phân (dùng cho SL còn lại trong bảng vật tư) */
 function round2(x){ return Math.round((Number(x)||0)*100)/100; }
@@ -1282,7 +1365,7 @@ function viewPCCCDesign(main, u){
       <button class="tab ${_pcccSubTab==='dashboard'?'active':''}" onclick="switchPCCCTab('dashboard')">📊 Dashboard</button>
       ${isEmployee?'':`<button class="tab ${_pcccSubTab==='input'?'active':''}" onclick="switchPCCCTab('input')">🏗️ Dự án</button>`}
     </div>
-    <div class="help-text">💡 Mô-đun Thiết kế PCCC dùng <b>chung dữ liệu dự án và nhân sự</b> với mục Quản lý dự án Thi công. Nút <b>↔</b> trên từng dòng dự án để <b>chuyển dự án sang sheet Thi công</b> (và ngược lại) — giữ nguyên toàn bộ dữ liệu. <b>Double-click</b> vào 1 dự án để mở cửa sổ chi tiết (có thể đổi kích thước) với đủ 6 tab: Tiến độ, Thông tin &amp; HĐ, Hồ sơ dự án, Vật tư, Bảo lãnh, Hồ sơ thanh toán.</div>
+    <div class="help-text">💡 Mô-đun Thiết kế PCCC dùng <b>chung dữ liệu dự án và nhân sự</b> với mục Quản lý dự án Thi công. Nút <b>↔</b> trên từng dòng dự án để <b>chuyển dự án sang sheet Thi công</b> (và ngược lại) — giữ nguyên toàn bộ dữ liệu. <b>Double-click</b> vào 1 dự án để mở cửa sổ chi tiết (có thể đổi kích thước) với đủ 6 tab: Tiến độ, Thông tin &amp; HĐ, Hồ sơ dự án, Vật tư, Bảo lãnh, Tài chính.</div>
     <div id="contract-body"></div>
   `;
   renderContractTabBody();
@@ -1691,21 +1774,17 @@ function viewDashboard(main, u){
     const rec = (db2.attendance[empId]||{})[period] || {};
     let full=0, half=0, leave=0, otHours=0, weighted=0;
     Object.values(rec).forEach(v=>{
-      // Cấu trúc mới: {code, ot, pendingCheckIn}; cấu trúc cũ: chỉ là string code
-      let code, ot, pending=false;
-      if(typeof v==='object' && v!==null){
-        code = v.code; ot = Number(v.ot)||0; pending = !!v.pendingCheckIn;
-        // [CC2] Muộn quá 60 phút mà KHÔNG có lý do được duyệt → chỉ tính NỬA công
-        if(code==='P' && v.late && Number(v.lateMins)>60 && !v.lateExcused) code='H';
-      }
-      else { code = v; ot = 0; }
+      // [v18-4] Công của ngày tính LẺ theo tỷ lệ giờ làm / 8h (tự động từ giờ vào–giờ về)
+      const info = attDayCredit(v);
+      const ot = (typeof v==='object' && v!==null) ? (Number(v.ot)||0) : 0;
       // [PATCH] Chấm công NV chờ duyệt không tính vào tổng công
-      if(pending) return;
+      if(info.pending) return;
       const _coef = (typeof v==='object' && v!==null && Number(v.workCoef)>0) ? Number(v.workCoef) : 1; // [I.6]
-      if(code==='P'){ full++; weighted += 1*_coef; }
-      else if(code==='H'){ half++; weighted += 0.5*_coef; }
-      else if(code==='O') leave++;
-      // [CC3] 'K' = nghỉ KHÔNG phép → 0 công, không cộng bucket nào
+      if(info.code==='P') full++;
+      else if(info.code==='H') half++;
+      else if(info.code==='O') leave++;
+      // [CC3] 'K' = nghỉ KHÔNG phép → 0 công
+      weighted += info.credit*_coef;
       otHours += ot;
     });
     return {full, half, leave, otHours, totalDays: Math.round(weighted*100)/100};
@@ -1930,19 +2009,27 @@ function renderAttGrid(empId, period, isReadOnly){
       </button>
       ${badge}
       ${stIcons}
-      <div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px" title="[I.1] Giờ tăng ca CHỈ qua đề xuất của NV + phê duyệt — mặc định 0h, không nhập tay tại đây">OT: <b>${ot||0}h</b></div>
+      ${(!isReadOnly)?`<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px;display:flex;align-items:center;gap:2px;justify-content:center" title="[v18-4] NGƯỜI PHÊ DUYỆT được ĐIỀU CHỈNH số giờ tăng ca của nhân viên. Nhân viên vẫn chỉ được đề xuất OT, không tự sửa.">OT:<input type="number" min="0" max="12" step="0.5" value="${ot||0}" onchange="updateAttOT('${empId}','${period}',${d},this.value)" onclick="event.stopPropagation()" style="width:34px;font-size:10px;padding:0 1px;border:1px solid rgba(255,255,255,.5);border-radius:3px;background:rgba(255,255,255,.55);color:#0f172a;text-align:center">h</div>`:`<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px" title="[I.1] Giờ tăng ca CHỈ qua đề xuất của NV + phê duyệt — mặc định 0h">OT: <b>${ot||0}h</b></div>`}
+      ${(()=>{const _cr=attDayCredit(cellRec); return (_cr && _cr.ratio!==null && _cr.ratio<1)?`<div style="font-size:9px;margin-top:1px;background:#7c3aed;color:#fff;border-radius:3px;font-weight:700" title="[v18-4] Về sớm hơn 8 tiếng — công tính theo tỷ lệ ${_cr.worked}h ÷ 8h">⏱ ${_cr.credit} công (${_cr.worked}h)</div>`:'';})()}
       ${(!isReadOnly)?`<input type="number" min="0" max="5" step="0.5" value="${(cellRec&&cellRec.workCoef)||''}" onchange="updateAttCoef('${empId}','${period}',${d},this.value)" placeholder="HS lễ/CN" title="[I.6] HỆ SỐ đi làm ngày LỄ / CHỦ NHẬT — người chấm công nhập tay (VD: 2 = lương ×2). Để trống = ngày thường." style="width:100%;font-size:10px;padding:1px 2px;margin-top:2px;border:1px solid rgba(255,255,255,.4);border-radius:4px;background:rgba(255,255,255,.3);color:inherit;text-align:center" onclick="event.stopPropagation()">`:((cellRec&&Number(cellRec.workCoef)>0&&Number(cellRec.workCoef)!==1)?`<div style="font-size:9px;margin-top:1px;background:#fbbf24;color:#78350f;border-radius:3px;font-weight:700">HS ×${cellRec.workCoef} (lễ/CN)</div>`:'')}
     </div>`;
   }
   wrap.innerHTML = cells;
   // Summary
-  let p=0,h=0,o=0,k=0,totalOT=0;
+  let p=0,h=0,o=0,k=0,totalOT=0,weightedTotal=0,partialDays=0;
   Object.values(rec).forEach(v=>{
     const info = _getCellInfo(v);
     if(info.code==='P')p++; else if(info.code==='H')h++; else if(info.code==='O')o++; else if(info.code==='K')k++;
     totalOT += info.ot;
+    // [v18-4] công lẻ theo giờ làm thực tế
+    const cr = attDayCredit(v);
+    if(!cr.pending){
+      const _cf = (typeof v==='object' && v!==null && Number(v.workCoef)>0) ? Number(v.workCoef) : 1;
+      weightedTotal += cr.credit*_cf;
+      if(cr.ratio!==null && cr.ratio<1) partialDays++;
+    }
   });
-  const total = p + 0.5*h;
+  const total = Math.round(weightedTotal*100)/100;
   const wd = countWorkingDays(yy, mm);
   const ratio = wd>0 ? (total/wd*100) : 0;
   document.getElementById('att-summary').innerHTML = `
@@ -1950,6 +2037,7 @@ function renderAttGrid(empId, period, isReadOnly){
     <b style="color:#f59e0b">Tăng ca: ${totalOT}h</b> ·
     <b>Quy đổi: ${total} công</b> / ${wd} ngày làm việc → <b>${ratio.toFixed(1)}%</b>
     <div class="hint" style="margin-top:4px">💡 Ngày có nhãn "⚠ muộn → ½ công": nhân viên đến muộn quá 1 tiếng không có lý do được duyệt nên chỉ tính nửa công. Duyệt lý do đi muộn ở trang Chấm công sẽ tự trả lại công đủ.</div>
+    <div class="hint" style="margin-top:2px;color:#7c3aed"><b>[v18] Công lẻ theo giờ làm:</b> ngày nào nhân viên chấm giờ về sớm hơn 8 tiếng thì ngày công tính theo tỷ lệ <b>số giờ làm ÷ 8</b> (tự động từ giờ vào – giờ về – 1,5h nghỉ trưa). Tháng này có <b>${partialDays}</b> ngày công lẻ. Hệ số lễ/CN vẫn nhân thêm vào công đã quy đổi.</div>
   `;
 }
 /* [I.6] Người chấm công nhập HỆ SỐ đi làm ngày lễ / chủ nhật (điều chỉnh được) */
@@ -2258,9 +2346,11 @@ window.selfCheckOut = async function(){
   rec.pendingCheckOut=true;
   _setAttRec(db, u.id, period, day, rec);
   await saveDB(db);
+  // [v18-4] Về sớm hơn 8 tiếng ⇒ ngày công tính lẻ theo tỷ lệ số giờ làm / 8
+  const _credit = Math.round(Math.min(1, hrs/8)*100)/100;
   toast(hrs>=8
-    ? `Đã chấm giờ về ${fmtDateTime(ts)} — giờ làm = giờ về − giờ vào − 1,5h nghỉ trưa = ${hrs}h (đủ 8 tiếng). Chờ người chấm công duyệt.`
-    : `Đã chấm giờ về ${fmtDateTime(ts)} — ⚠ giờ làm (đã trừ 1,5h nghỉ trưa) = ${hrs}h, CHƯA đủ 8 tiếng! Chờ người chấm công duyệt.`,
+    ? `Đã chấm giờ về ${fmtDateTime(ts)} — giờ làm = giờ về − giờ vào − 1,5h nghỉ trưa = ${hrs}h (đủ 8 tiếng) → tính 1 công. Chờ người chấm công duyệt.`
+    : `Đã chấm giờ về ${fmtDateTime(ts)} — ⚠ giờ làm (đã trừ 1,5h nghỉ trưa) = ${hrs}h, CHƯA đủ 8 tiếng → ngày công chỉ được tính ${_credit} công (${hrs}h ÷ 8h). Chờ người chấm công duyệt.`,
     hrs>=8?'success':'warn');
   render();
 };
@@ -2546,12 +2636,16 @@ window.confirmOTRequest = async function(empId, period, day){
   const db = getDB();
   const rec = _getAttRec(db, empId, period, day);
   if(!rec || !rec.otReq || rec.otReq.status!=='pending'){ toast('Không có đăng ký OT chờ duyệt','warn'); return; }
-  rec.ot = Number(rec.otReq.hours)||0;
+  // [v18-4] Người phê duyệt được điều chỉnh số giờ tăng ca trước khi duyệt
+  const _adj = document.getElementById('otadj-'+empId+'-'+period+'-'+day);
+  const _hrs = _adj ? Math.max(0, Number(_adj.value)||0) : (Number(rec.otReq.hours)||0);
+  rec.ot = _hrs;
+  rec.otReq.approvedHours = _hrs;
   rec.otReq.status='approved';
   rec.otReq.decidedBy=currentUser().id; rec.otReq.decidedAt=Date.now();
   _setAttRec(db, empId, period, day, rec);
   await saveDB(db);
-  toast('Đã duyệt tăng ca '+rec.ot+'h');
+  toast('Đã duyệt tăng ca '+rec.ot+'h'+((Number(rec.otReq.hours)||0)!==rec.ot?' (đã điều chỉnh từ '+rec.otReq.hours+'h)':''));
   render();
 };
 window.rejectOTRequest = async function(empId, period, day){
@@ -2724,7 +2818,10 @@ function renderAttendancePendingList(u, db){
         <td><b>${escapeHtml(p.emp.name)}</b><div class="hint muted">${escapeHtml(p.emp.code||p.emp.username)}</div></td>
         <td><span class="badge co">${getCompany(p.emp.companyId).code}</span></td>
         <td>${escapeHtml(dStr)}</td>
-        <td class="center"><b style="color:#b45309">${p.rec.otReq.hours}h</b></td>
+        <td class="center">
+          <input type="number" min="0" max="12" step="0.5" id="otadj-${p.emp.id}-${p.period}-${p.day}" value="${p.rec.otReq.hours}" style="width:66px;text-align:center;font-weight:700;color:#b45309" title="[v18-4] Người phê duyệt được ĐIỀU CHỈNH số giờ tăng ca trước khi duyệt">
+          <div class="hint muted">NV khai: ${p.rec.otReq.hours}h</div>
+        </td>
         <td class="muted">${escapeHtml(p.rec.otReq.note||'')}</td>
         <td>
           <button class="btn sm success" onclick="confirmOTRequest('${p.emp.id}','${p.period}',${p.day})">✓ Duyệt</button>
@@ -2734,9 +2831,9 @@ function renderAttendancePendingList(u, db){
     }).join('');
     otCard = `<div class="card" style="border-left:5px solid #f59e0b">
       <h3 style="border:none;padding:0;margin-bottom:8px">🕐 Đăng ký TĂNG CA chờ duyệt <span class="badge" style="background:#fef3c7;color:#92400e">${pendingOT.length}</span></h3>
-      <div class="hint" style="margin-bottom:8px">💡 NV tự khai số giờ tăng ca thực tế. Chỉ giờ <b>đã duyệt</b> mới tính vào bảng công, lương và KPI.</div>
+      <div class="hint" style="margin-bottom:8px">💡 NV tự khai số giờ tăng ca thực tế. Chỉ giờ <b>đã duyệt</b> mới tính vào bảng công, lương và KPI. <b>[v18] Người phê duyệt được sửa trực tiếp số giờ OT</b> trong ô "Giờ OT" trước khi bấm Duyệt, hoặc sửa sau trong ô OT trên lịch chấm công.</div>
       <div class="tbl-wrap"><table style="font-size:13px">
-        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ OT</th><th>Nội dung</th><th></th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Công ty</th><th>Ngày</th><th>Giờ OT (sửa được)</th><th>Nội dung</th><th></th></tr></thead>
         <tbody>${otRows}</tbody>
       </table></div>
     </div>`;
@@ -2897,16 +2994,16 @@ window.exportAttendanceExcel = function(){
     const rec = (db.attendance[emp.id]||{})[period]||{};
     let p=0,h=0,o=0,k=0;
     // [FIX] Đếm đúng cả bản ghi dạng object (tự chấm công) + quy tắc muộn >1h = nửa công
+    let wdays=0;
     Object.values(rec).forEach(v=>{
-      let code, pending=false;
-      if(typeof v==='object' && v!==null){
-        if(v.pendingCheckIn) return;
-        code=v.code||'';
-        if(code==='P' && v.late && Number(v.lateMins)>60 && !v.lateExcused) code='H';
-      } else code=v||'';
+      const info=attDayCredit(v);
+      if(info.pending) return;
+      const code=info.code;
       if(code==='P')p++; else if(code==='H')h++; else if(code==='O')o++; else if(code==='K')k++;
+      const _cf = (typeof v==='object' && v!==null && Number(v.workCoef)>0) ? Number(v.workCoef) : 1;
+      wdays += info.credit*_cf;   // [v18-4] công lẻ theo giờ làm
     });
-    const totalDays = p + 0.5*h;
+    const totalDays = Math.round(wdays*100)/100;
     const ratio = wd>0 ? totalDays/wd : 1;
     const baseAdj = Math.round((sal.base + sal.allowance) * Math.min(1, ratio));
     const total = baseAdj + sal.totalKpiActual;
@@ -3147,7 +3244,7 @@ window.openUserForm = function(userId){
                   </select>
                 </div>
                 <div class="field"><label style="font-size:11px">Lương cơ sở KPI (đ)</label>
-                  <input type="number" id="asg-base-${a.id}" value="${existing?.kpiBase||''}" placeholder="Cơ sở tính thưởng KPI">
+                  <input type="text" inputmode="numeric" data-money id="asg-base-${a.id}" value="${fmtMoney(existing?.kpiBase)}" placeholder="Cơ sở tính thưởng KPI">
                 </div>
                 <div class="field"><label style="font-size:11px">% KPI (0-1)</label>
                   <input type="number" step="0.01" id="asg-pct-${a.id}" value="${existing?.kpiPct||''}" placeholder="VD 0.30">
@@ -3171,8 +3268,8 @@ window.openUserForm = function(userId){
       <hr><h3>💰 Lương cơ bản (chỉ Admin xem & sửa)</h3>
       <div class="warn-text"><b>Công thức lương:</b> Lương cứng cơ bản + Hỗ trợ + Σ Thưởng KPI (cộng dồn từ tất cả các mảng đảm nhiệm ở trên).</div>
       <div class="grid-2">
-        <div class="field"><label>Lương cứng cơ bản (đ/tháng)</label><input id="f-base" type="number" value="${e?.baseSalary||''}"></div>
-        <div class="field"><label>Hỗ trợ / Phụ cấp (đ/tháng)</label><input id="f-allow" type="number" value="${e?.allowance||''}"></div>
+        <div class="field"><label>Lương cứng cơ bản (đ/tháng)</label><input id="f-base" type="text" inputmode="numeric" data-money value="${fmtMoney(e?.baseSalary)}"></div>
+        <div class="field"><label>Hỗ trợ / Phụ cấp (đ/tháng)</label><input id="f-allow" type="text" inputmode="numeric" data-money value="${fmtMoney(e?.allowance)}"></div>
       </div>
       <div class="err" id="f-err"></div>
     `,
@@ -3361,11 +3458,11 @@ function openRankForm(area, idx){
       <div class="field"><label>Mã bậc</label><input id="r-code" value="${escapeHtml(r.code)}"></div>
       <div class="field"><label>Chức danh</label><input id="r-name" value="${escapeHtml(r.name)}"></div>
       <div class="grid-2">
-        <div class="field"><label>Lương tối thiểu</label><input id="r-min" type="number" value="${r.min}"></div>
-        <div class="field"><label>Lương tối đa</label><input id="r-max" type="number" value="${r.max}"></div>
-        <div class="field"><label>Lương áp dụng</label><input id="r-applied" type="number" value="${r.applied}"></div>
+        <div class="field"><label>Lương tối thiểu (đ)</label><input id="r-min" type="text" inputmode="numeric" data-money value="${fmtMoney(r.min)}"></div>
+        <div class="field"><label>Lương tối đa (đ)</label><input id="r-max" type="text" inputmode="numeric" data-money value="${fmtMoney(r.max)}"></div>
+        <div class="field"><label>Lương áp dụng (đ)</label><input id="r-applied" type="text" inputmode="numeric" data-money value="${fmtMoney(r.applied)}"></div>
         <div class="field"><label>% KPI (0-1)</label><input id="r-kpi" type="number" step="0.05" value="${r.kpiPct}"></div>
-        <div class="field"><label>Phụ cấp</label><input id="r-allow" type="number" value="${r.allowance}"></div>
+        <div class="field"><label>Phụ cấp (đ)</label><input id="r-allow" type="text" inputmode="numeric" data-money value="${fmtMoney(r.allowance)}"></div>
       </div>
     `,
     footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
@@ -3631,6 +3728,7 @@ function renderTasksTable(){
   const rowHtml = (t)=>{
     const emp=db.users.find(x=>x.id===t.assigneeId);
     const giver=db.users.find(x=>x.id===t.createdBy);
+    const appr=t.approverId?db.users.find(x=>x.id===t.approverId):null;   // [v18-3] người phê duyệt
     const proj=t.projectId?db.contracts.find(x=>x.id===t.projectId):null;
     const stat = deadlineStatus(t);
     let dueStyle='', dueExtra='';
@@ -3644,7 +3742,8 @@ function renderTasksTable(){
       <td style="text-align:center">${cb}</td>
       <td><b>${escapeHtml(emp?.name||'N/A')}</b><div class="hint muted">${escapeHtml(emp?.code||emp?.username||'')}</div></td>
       <td><b>${escapeHtml(giver?.name||'—')}</b></td>
-      <td>${escapeHtml(t.title)}${proj?`<div class="hint muted">🏗 Dự án: ${escapeHtml(proj.name||proj.code)}</div>`:''}</td>
+      <td>${appr?`<b style="color:#7c3aed">${escapeHtml(appr.name)}</b><div class="hint muted">${escapeHtml(appr.code||appr.username||'')}</div>`:'<span class="muted">— chưa giao —</span>'}</td>
+      <td>${escapeHtml(t.title)}${proj?`<div class="hint muted">🏗 Dự án: ${escapeHtml(proj.name||proj.code)}</div>`:''}${(Array.isArray(t.kpiItemNames)&&t.kpiItemNames.length)?`<div class="hint" style="color:#0f766e">🎯 KPI: ${escapeHtml(t.kpiItemNames.join(' · '))}</div>`:''}</td>
       <td>${t.area?`<span class="badge area-${t.area}">${getArea(t.area).name}</span>`:'—'}</td>
       <td>${fmtDate(t.createdAt)}</td>
       <td style="${dueStyle}">${fmtDate(t.dueDate)}${dueExtra}</td>
@@ -3664,6 +3763,7 @@ function renderTasksTable(){
           <th style="width:36px"></th>
           <th>Người thực hiện</th>
           <th>Người giao việc</th>
+          <th>Người phê duyệt</th>
           <th>Nhiệm vụ</th>
           <th>Mảng công việc</th>
           <th>Ngày giao</th>
@@ -3672,7 +3772,7 @@ function renderTasksTable(){
           <th>Ghi chú</th>
           <th></th>
         </tr></thead>
-        <tbody>${activeTasks.map(rowHtml).join('') || `<tr><td colspan="10" class="empty">${filterId?'Nhân viên này chưa có nhiệm vụ đang thực hiện':'Chưa có nhiệm vụ đang thực hiện'}</td></tr>`}</tbody>
+        <tbody>${activeTasks.map(rowHtml).join('') || `<tr><td colspan="11" class="empty">${filterId?'Nhân viên này chưa có nhiệm vụ đang thực hiện':'Chưa có nhiệm vụ đang thực hiện'}</td></tr>`}</tbody>
       </table>
     </div>
     <!-- [PATCH] Card công việc đã hoàn thành — thu gọn -->
@@ -3684,10 +3784,10 @@ function renderTasksTable(){
       <div id="done-tasks-body" style="margin-top:10px;display:${showDone?'block':'none'}">
         ${showDone ? `<div class="tbl-wrap"><table><thead><tr>
           <th style="width:36px"></th>
-          <th>Người thực hiện</th><th>Người giao việc</th><th>Nhiệm vụ</th>
+          <th>Người thực hiện</th><th>Người giao việc</th><th>Người phê duyệt</th><th>Nhiệm vụ</th>
           <th>Mảng công việc</th><th>Ngày giao</th><th>Hạn hoàn thành</th>
           <th>Trạng thái</th><th>Ghi chú</th><th></th>
-        </tr></thead><tbody>${doneTasks.map(rowHtml).join('') || `<tr><td colspan="10" class="empty">Chưa có công việc hoàn thành</td></tr>`}</tbody></table></div>`
+        </tr></thead><tbody>${doneTasks.map(rowHtml).join('') || `<tr><td colspan="11" class="empty">Chưa có công việc hoàn thành</td></tr>`}</tbody></table></div>`
         : `<ul style="margin:0;padding-left:18px;color:#64748b;text-decoration:line-through">${doneTasks.map(t=>`<li>${escapeHtml(t.title)}</li>`).join('') || '<li class="muted" style="text-decoration:none">Chưa có công việc hoàn thành</li>'}</ul>`
         }
       </div>
@@ -4663,6 +4763,12 @@ window.openTaskForm = function(id){
             ${WORK_AREAS.map(a=>`<option value="${a.id}" ${t?.area===a.id?'selected':''}>${escapeHtml(a.name)}</option>`).join('')}
           </select>
         </div>
+        <div class="field"><label>✅ Người phê duyệt <span class="muted" style="font-size:11px">(giao nhiệm vụ DUYỆT kết quả cho 1 người trong công ty)</span></label>
+          <select id="t-approver">
+            <option value="">— Chưa giao người phê duyệt —</option>
+            ${db.users.filter(x=>x.role!=='admin').map(e=>`<option value="${e.id}" ${t?.approverId===e.id?'selected':''}>${escapeHtml(e.name)} (${escapeHtml(e.code||e.username)}) — ${escapeHtml(getCompany(e.companyId).code)}</option>`).join('')}
+          </select>
+        </div>
         <div class="field"><label>🏗 Thuộc dự án <span class="muted" style="font-size:11px">(hoặc để "Việc chung")</span></label>
           <select id="t-project">
             <option value="">— Việc chung (không thuộc dự án) —</option>
@@ -4766,6 +4872,9 @@ window.saveTask = function(id){
   t.kpiItemName = t.kpiItemNames[0]||''; // tương thích ngược
   const prjSel=document.getElementById('t-project');
   if(prjSel) t.projectId = prjSel.value||null;
+  // [v18-3] Người phê duyệt nhiệm vụ
+  const aprSel=document.getElementById('t-approver');
+  if(aprSel) t.approverId = aprSel.value||'';
   const due=v('t-due'); t.dueDate=due?new Date(due).getTime():null;
   t.status=v('t-status');
   t.note=v('t-note').trim();
@@ -4792,7 +4901,7 @@ window.openBulkTaskForm = function(){
   openModal({
     title:'📦 Giao nhiều nhiệm vụ cùng lúc', size:'lg',
     html:`
-      <div class="help-text"><b>Bước 1:</b> tích chọn 1 hoặc nhiều nhân viên ở khung bên trái. <b>Bước 2:</b> thêm các dòng nhiệm vụ ở khung bên phải (có thể thuộc nhiều mảng khác nhau). Khi bấm <b>Giao tất cả</b>, hệ thống sẽ tạo <i>(số nhân viên) × (số nhiệm vụ)</i> bản ghi task.</div>
+      <div class="help-text"><b>Bước 1:</b> tích chọn 1 hoặc nhiều nhân viên ở khung bên trái. <b>Bước 2:</b> thêm các dòng nhiệm vụ ở khung bên phải (có thể thuộc nhiều mảng khác nhau). Khi bấm <b>Giao tất cả</b>, hệ thống sẽ tạo <i>(số nhân viên) × (số nhiệm vụ)</i> bản ghi task.<br>✅ <b>[v18]</b> Form giao NHIỀU việc đã đồng bộ đầy đủ với giao 1 việc: mỗi dòng nhiệm vụ đều chọn được <b>người phê duyệt</b>, <b>dự án</b> và <b>các chỉ tiêu KPI tự động</b>.</div>
       <div class="grid-2">
         <div>
           <h3>👥 Chọn nhân viên (tích nhiều)</h3>
@@ -4826,7 +4935,7 @@ window.openBulkTaskForm = function(){
     footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
             <button class="btn success" onclick="saveBulkTasks()">📤 Giao tất cả</button>`,
     onShown:()=>{
-      window._bulkTaskRows = [{title:'',area:'',dueDate:'',note:''}];
+      window._bulkTaskRows = [{title:'',area:'',dueDate:'',note:'',approverId:'',projectId:'',kpiItemNames:[]}];
       renderBulkTaskRows();
     }
   });
@@ -4837,18 +4946,39 @@ window.bulkSelectAllEmps = function(checked){
 };
 window.addBulkTaskRow = function(){
   if(!window._bulkTaskRows) window._bulkTaskRows=[];
-  window._bulkTaskRows.push({title:'',area:'',dueDate:'',note:''});
+  window._bulkTaskRows.push({title:'',area:'',dueDate:'',note:'',approverId:'',projectId:'',kpiItemNames:[]});
   renderBulkTaskRows();
 };
 window.removeBulkTaskRow = function(i){
   window._bulkTaskRows.splice(i,1);
-  if(!window._bulkTaskRows.length) window._bulkTaskRows.push({title:'',area:'',dueDate:'',note:''});
+  if(!window._bulkTaskRows.length) window._bulkTaskRows.push({title:'',area:'',dueDate:'',note:'',approverId:'',projectId:'',kpiItemNames:[]});
   renderBulkTaskRows();
 };
 window.updateBulkTaskRow = function(i, field, value){
   if(!window._bulkTaskRows[i]) return;
   window._bulkTaskRows[i][field]=value;
+  // [v18-3] Đổi mảng ⇒ nạp lại danh sách chỉ tiêu KPI của dòng đó (giống giao 1 việc)
+  if(field==='area'){ window._bulkTaskRows[i].kpiItemNames=[]; renderBulkTaskRows(); }
 };
+/* [v18-3] Tích/bỏ tích chỉ tiêu KPI cho 1 dòng nhiệm vụ trong form giao NHIỀU việc */
+window.toggleBulkKpi = function(i, name, checked){
+  const r=window._bulkTaskRows[i]; if(!r) return;
+  if(!Array.isArray(r.kpiItemNames)) r.kpiItemNames=[];
+  if(checked){ if(!r.kpiItemNames.includes(name)) r.kpiItemNames.push(name); }
+  else r.kpiItemNames = r.kpiItemNames.filter(x=>x!==name);
+};
+/* [v18-3] HTML khối chỉ tiêu KPI cho 1 dòng nhiệm vụ (giao nhiều việc) */
+function _bulkKpiBoxHtml(r, i){
+  const db=getDB();
+  const items=(r.area && db.kpiTemplates[r.area])||[];
+  if(!r.area) return '<span class="muted" style="font-size:11px">— Chọn mảng công việc trước —</span>';
+  if(!items.length) return '<span class="muted" style="font-size:11px">— Mảng này chưa có chỉ tiêu KPI —</span>';
+  const sel=Array.isArray(r.kpiItemNames)?r.kpiItemNames:[];
+  return items.map(it=>`<label style="display:flex;align-items:flex-start;gap:5px;font-weight:400;font-size:11.5px;cursor:pointer">
+      <input type="checkbox" class="bulk-kpi-chk" value="${escapeHtml(it.name)}" ${sel.includes(it.name)?'checked':''} onchange="toggleBulkKpi(${i},this.value,this.checked)">
+      <span>${escapeHtml(it.name)} <span class="muted">(${(it.weight*100).toFixed(0)}%)</span></span>
+    </label>`).join('');
+}
 function renderBulkTaskRows(){
   const host=document.getElementById('bulk-tasks');
   if(!host) return;
@@ -4869,6 +4999,23 @@ function renderBulkTaskRows(){
           <input type="date" value="${r.dueDate||''}" onchange="updateBulkTaskRow(${i},'dueDate',this.value)">
         </div>
       </div>
+      <div class="grid-2" style="gap:6px">
+        <div class="field" style="margin-bottom:6px"><label style="font-size:11px">✅ Người phê duyệt</label>
+          <select onchange="updateBulkTaskRow(${i},'approverId',this.value)">
+            <option value="">— Chưa giao người phê duyệt —</option>
+            ${getDB().users.filter(x=>x.role!=='admin').map(e=>`<option value="${e.id}" ${r.approverId===e.id?'selected':''}>${escapeHtml(e.name)} (${escapeHtml(e.code||e.username)})</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:6px"><label style="font-size:11px">🏗 Thuộc dự án</label>
+          <select onchange="updateBulkTaskRow(${i},'projectId',this.value)">
+            <option value="">— Việc chung —</option>
+            ${getDB().contracts.filter(c=>c.completionStatus!=='completed'&&c.completionStatus!=='cancelled').map(c=>`<option value="${c.id}" ${r.projectId===c.id?'selected':''}>${escapeHtml(c.name||c.code||'')}${c.pcccDesign?' (TK PCCC)':''}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:6px"><label style="font-size:11px">🎯 Chỉ tiêu KPI gắn với công việc <span class="muted">— tích 1 hoặc nhiều</span></label>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:3px;border:1px solid #e2e8f0;border-radius:8px;padding:6px;max-height:120px;overflow:auto">${_bulkKpiBoxHtml(r,i)}</div>
+      </div>
       <div class="field" style="margin-bottom:6px"><label style="font-size:11px">Ghi chú</label>
         <input value="${escapeHtml(r.note)}" oninput="updateBulkTaskRow(${i},'note',this.value)">
       </div>
@@ -4888,6 +5035,7 @@ window.saveBulkTasks = function(){
   let createdCount=0;
   empIds.forEach(eid=>{
     tasks.forEach(t=>{
+      const _kpiNames = Array.isArray(t.kpiItemNames)?t.kpiItemNames.slice():[];
       const tk={
         id:uid('t'),
         title:t.title.trim(),
@@ -4897,7 +5045,12 @@ window.saveBulkTasks = function(){
         status:'new',
         note:t.note.trim(),
         createdAt:Date.now(),
-        createdBy:me.id
+        createdBy:me.id,
+        // [v18-3] Đồng bộ với form giao 1 việc: người duyệt + chỉ tiêu KPI + dự án
+        approverId: t.approverId||'',
+        projectId: t.projectId||null,
+        kpiItemNames: _kpiNames,
+        kpiItemName: _kpiNames[0]||''
       };
       db.tasks.push(tk);
       createdCount++;
@@ -6498,6 +6651,7 @@ function renderMyTasksTable(){
       dueExtra += `<span class="badge kpi-xs" style="margin-left:6px;font-size:10px;background:#dcfce7;color:#166534">✓ ĐÃ GIA HẠN</span>`;
     }
     const giver=db.users.find(x=>x.id===t.createdBy);
+    const appr=t.approverId?db.users.find(x=>x.id===t.approverId):null;   // [v18-3]
     const rowBg = behind && !isDoneRow ? 'background:#fff5f5;' : '';
     const rowStyle = isDoneRow ? 'text-decoration:line-through;color:#94a3b8;' : '';
     const pend = t.pendingComplete && !isDoneRow;
@@ -6506,6 +6660,7 @@ function renderMyTasksTable(){
       <td style="text-align:center">${cb}</td>
       <td><b>${escapeHtml(t.title)}</b></td>
       <td><b>${escapeHtml(giver?.name||'—')}</b></td>
+      <td>${appr?`<b style="color:#7c3aed">${escapeHtml(appr.name)}</b>`:'<span class="muted">—</span>'}</td>
       <td>${areaLabel}</td>
       <td>${fmtDate(t.createdAt)}</td>
       <td style="${dueStyle}">${fmtDate(t.dueDate)}${dueExtra}</td>
@@ -6535,6 +6690,7 @@ function renderMyTasksTable(){
         <th style="width:36px"></th>
         <th>Nhiệm vụ</th>
         <th>Người giao việc</th>
+        <th>Người phê duyệt</th>
         <th>Mảng / Dự án</th>
         <th>Ngày giao</th>
         <th>Hạn hoàn thành</th>
@@ -6542,7 +6698,7 @@ function renderMyTasksTable(){
         <th style="min-width:220px">Tiến độ %</th>
         <th>Ghi chú</th>
       </tr></thead>
-      <tbody>${activeTasks.map(t=>rowHtml(t,false)).join('') || '<tr><td colspan="9" class="empty">Không có nhiệm vụ đang thực hiện</td></tr>'}</tbody>
+      <tbody>${activeTasks.map(t=>rowHtml(t,false)).join('') || '<tr><td colspan="10" class="empty">Không có nhiệm vụ đang thực hiện</td></tr>'}</tbody>
     </table></div>
     <!-- [PATCH] Card công việc đã hoàn thành — thu gọn -->
     <div class="card" style="margin-top:14px;border:1px solid #cbd5e1">
@@ -6553,10 +6709,10 @@ function renderMyTasksTable(){
       <div id="done-tasks-body" style="margin-top:10px;display:${showDone?'block':'none'}">
         ${showDone ? `<div class="tbl-wrap"><table><thead><tr>
           <th style="width:36px"></th>
-          <th>Nhiệm vụ</th><th>Người giao việc</th><th>Mảng / Dự án</th>
+          <th>Nhiệm vụ</th><th>Người giao việc</th><th>Người phê duyệt</th><th>Mảng / Dự án</th>
           <th>Ngày giao</th><th>Hạn hoàn thành</th><th>Trạng thái</th>
           <th style="min-width:220px">Tiến độ %</th><th>Ghi chú</th>
-        </tr></thead><tbody>${doneTasks.map(t=>rowHtml(t,true)).join('') || '<tr><td colspan="9" class="empty">Chưa có công việc hoàn thành</td></tr>'}</tbody></table></div>`
+        </tr></thead><tbody>${doneTasks.map(t=>rowHtml(t,true)).join('') || '<tr><td colspan="10" class="empty">Chưa có công việc hoàn thành</td></tr>'}</tbody></table></div>`
         : `<ul style="margin:0;padding-left:18px;color:#64748b;text-decoration:line-through">${doneTasks.map(t=>`<li>${escapeHtml(t.title)}</li>`).join('') || '<li class="muted" style="text-decoration:none">Chưa có công việc hoàn thành</li>'}</ul>`
         }
       </div>
@@ -7428,14 +7584,14 @@ function renderContractPopupWindow(cid){
       <button class="tab" data-tab="progress"  onclick="switchPopupTab('progress')">📅 1. Tiến độ & Công việc thiết kế</button>
       <button class="tab" data-tab="info"      onclick="switchPopupTab('info')">📋 2. Thông tin đầu vào DA</button>
       <button class="tab" data-tab="pccc"      onclick="switchPopupTab('pccc')">📁 3. Hồ sơ dự án</button>
-      <button class="tab" data-tab="payDocs"   onclick="switchPopupTab('payDocs')">💼 4. Hồ sơ thanh toán</button>
+      <button class="tab" data-tab="payDocs"   onclick="switchPopupTab('payDocs')">💰 4. Tài chính</button>
       `:`
       <button class="tab" data-tab="progress"  onclick="switchPopupTab('progress')">📅 1. Tiến độ & Công việc thi công</button>
       <button class="tab" data-tab="info"      onclick="switchPopupTab('info')">📋 2. Đầu vào thông tin DA & HĐ</button>
       <button class="tab" data-tab="pccc"      onclick="switchPopupTab('pccc')">📁 3. Hồ sơ dự án</button>
       <button class="tab" data-tab="mat"       onclick="switchPopupTab('mat')">📦 4. Vật tư & Thiết bị</button>
       <button class="tab" data-tab="guarantee" onclick="switchPopupTab('guarantee')">🏦 5. Bảo lãnh ngân hàng</button>
-      <button class="tab" data-tab="payDocs"   onclick="switchPopupTab('payDocs')">💼 6. Hồ sơ thanh toán</button>
+      <button class="tab" data-tab="payDocs"   onclick="switchPopupTab('payDocs')">💰 6. Tài chính</button>
       `}
     </div>
     <div id="pop-body" style="padding:14px 20px"></div>
@@ -7453,7 +7609,7 @@ window.switchPopupTab = function(t){
     pccc:'📁 3. Hồ sơ dự án (Hồ sơ kỹ thuật, Pháp lý PCCC — loại HS & biên bản tự thêm/xóa được)',
     mat:'📦 4. Vật tư & Thiết bị PCCC (Phụ lục + Phiếu nhập + Vật tư phát sinh + NCC)',
     guarantee:'🏦 5. Quản lý Bảo lãnh Ngân hàng (Thực hiện HĐ + Tạm ứng + Bảo hành)',
-    payDocs:'💼 6. Hồ sơ thanh toán dự án (HĐ, Tạm ứng, Nghiệm thu, Thanh toán, Quyết toán, Bảo lãnh)'
+    payDocs:'💰 6. Tài chính dự án (Giá trị HĐ · Phụ lục · Quyết toán · Theo dõi thanh toán · Hồ sơ thanh toán)'
   };
   document.getElementById('pop-sheet-name').textContent = labels[t]||t;
   document.querySelectorAll('.tab[data-tab]').forEach(b=>b.classList.toggle('active', b.dataset.tab===t));
@@ -7633,7 +7789,7 @@ function renderPopupMaterials(host, cid){
         <td><input class="mat-edit" data-mid="${m.id}" data-field="qtyContract" type="number" value="${m.qtyContract||0}" style="width:90px"></td>
         <td class="right muted">${imported}</td>
         <td class="right muted">${remaining}</td>
-        <td><input class="mat-edit" data-mid="${m.id}" data-field="unitPriceContract" type="number" value="${m.unitPriceContract||0}" style="width:130px"></td>
+        <td><input class="mat-edit" data-mid="${m.id}" data-field="unitPriceContract" type="text" inputmode="numeric" data-money value="${fmtMoney(m.unitPriceContract||0)}" style="width:140px;text-align:right"></td>
         <td class="right" style="font-weight:600;color:#1e3a8a">${fmtVND(lineTotal)}</td>
         <td class="right muted">${fmtVND(importedValue)}</td>
         <td><input class="mat-edit" data-mid="${m.id}" data-field="note" value="${escapeHtml(m.note||'')}" placeholder="Ghi chú"></td>
@@ -8324,27 +8480,17 @@ window.openContractForm = function(contractId){
         })()}
       </div>
       <h3>3. Tài chính</h3>
-      <div class="grid-3">
-        <div class="field"><label>Giá trị HĐ gốc (đ)</label><input id="cf-val" type="number" value="${c?.value||''}" oninput="recomputeContractTotals()"></div>
-        <div class="field"><label>TT Quyết toán</label>
-          <select id="cf-set">${SETTLEMENT_STATUS.map(s=>`<option value="${s.v}" ${c?.settlementStatus===s.v?'selected':''}>${s.label}</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>Giá trị sau QT (đ)</label><input id="cf-setval" type="number" value="${c?.settlementValue||''}"></div>
+      <div class="warn-text" style="background:#dbeafe;border-color:#93c5fd;color:#1e3a8a">
+        💰 <b>[v18] Toàn bộ phần Tài chính đã chuyển ra "Mục 6: Tài chính"</b> của cửa sổ dự án
+        (double-click vào dự án → tab <b>💰 Tài chính</b>). Tại đó nhập & xem đầy đủ:
+        Giá trị hợp đồng ban đầu · Giá trị phụ lục hợp đồng · Giá trị hợp đồng cuối cùng ·
+        Giá trị quyết toán · Giá trị còn lại sau thanh toán · Bảng theo dõi các lần thanh toán.
+        <div class="hint" style="margin-top:4px">Các số liệu tài chính hiện tại của dự án vẫn được giữ nguyên khi lưu form này.</div>
       </div>
-
-      <h3>📑 Phụ lục hợp đồng <button class="btn sm success" type="button" onclick="addAddendumRow()" style="float:right">+ Thêm phụ lục</button></h3>
-      <div class="help-text">Phụ lục hợp đồng cập nhật <b>gia hạn thời gian</b> và <b>thay đổi giá trị hợp đồng</b>. Giá trị thay đổi có thể là số dương (tăng) hoặc âm (giảm). Tổng giá trị HĐ thực tế = Giá trị HĐ gốc + Σ giá trị phụ lục.</div>
-      <div id="cf-addendum-list"></div>
-
-      <h3>💳 Các lần thanh toán</h3>
-      <div class="help-text">[C2] Bảng thanh toán đã <b>chuyển sang cửa sổ dự án → tab "Hồ sơ thanh toán" → mục "💰 Theo dõi thanh toán"</b> (đủ cột: Lần TT, Ngày, Số tiền theo HS được duyệt, Số tiền thực nhận, Thuế vãng lai, Số hóa đơn, Ghi chú).</div>
+      <input type="hidden" id="cf-val" value="${c?.value||0}">
+      <input type="hidden" id="cf-set" value="${escapeHtml(c?.settlementStatus||'pending')}">
+      <input type="hidden" id="cf-setval" value="${c?.settlementValue||0}">
       <input type="hidden" id="cf-paid" value="${c?.paidValue||0}">
-      <div style="background:#f1f5f9;padding:10px;border-radius:8px;margin-top:8px;font-size:13px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
-        <div><div class="muted">Tổng đã thanh toán</div><b style="color:#1e3a8a" id="cf-paid-total">0 đ</b></div>
-        <div><div class="muted">Tổng thuế vãng lai</div><b style="color:#b45309" id="cf-tax-total">0 đ</b></div>
-        <div><div class="muted">Tổng GT HĐ (gốc + phụ lục)</div><b style="color:#1e3a8a" id="cf-total-val">0 đ</b></div>
-        <div><div class="muted">Còn phải thu</div><b style="color:#dc2626" id="cf-remaining">0 đ</b></div>
-      </div>
       <h3>4. Hồ sơ pháp lý — dán link Google Drive</h3>
       <div class="warn-text">Đăng tải file lên Google Drive doanh nghiệp, share "Anyone with the link" và dán link vào ô tương ứng. Phần mềm chỉ lưu link, không upload file.</div>
       ${CONTRACT_DOC_TYPES.map(t=>`<div class="field"><label>${escapeHtml(t.label)}</label><input id="cf-doc-${t.key}" type="url" placeholder="https://drive.google.com/..." value="${escapeHtml(docs[t.key]||'')}"></div>`).join('')}
@@ -8483,7 +8629,7 @@ function renderMaterialRows(){
       <td><input value="${escapeHtml(m.name)}" oninput="updateMatRow(${i},'name',this.value)"></td>
       <td><input value="${escapeHtml(m.unit||'')}" oninput="updateMatRow(${i},'unit',this.value)" style="width:70px"></td>
       <td><input type="number" value="${m.qtyContract||''}" oninput="updateMatRow(${i},'qtyContract',this.value)" style="width:90px"></td>
-      <td><input type="number" value="${m.unitPriceContract||''}" oninput="updateMatRow(${i},'unitPriceContract',this.value)" style="width:140px"></td>
+      <td><input type="text" inputmode="numeric" data-money value="${fmtMoney(m.unitPriceContract)}" oninput="updateMatRow(${i},'unitPriceContract',this.value)" style="width:150px;text-align:right"></td>
       <td><input value="${escapeHtml(m.note||'')}" oninput="updateMatRow(${i},'note',this.value)"></td>
       <td><button class="btn sm danger" type="button" onclick="removeMaterialRow(${i})">🗑</button></td>
     </tr>`).join('')}</tbody></table></div>`;
@@ -10587,7 +10733,7 @@ window.openGuaranteeForm = function(cid, gid){
         </div>
         <div class="field"><label>Ngân hàng phát hành *</label><input id="g-bank" value="${escapeHtml(g?.bank||'')}" placeholder="VD: Vietcombank — CN Hà Nội"></div>
         <div class="field"><label>Số bảo lãnh *</label><input id="g-code" value="${escapeHtml(g?.code||'')}" placeholder="VD: BL-2024-001"></div>
-        <div class="field"><label>Giá trị bảo lãnh (VNĐ) *</label><input id="g-value" type="number" min="0" value="${g?.value||''}"></div>
+        <div class="field"><label>Giá trị bảo lãnh (đ) *</label><input id="g-value" type="text" inputmode="numeric" data-money value="${fmtMoney(g?.value)}"></div>
         <div class="field"><label>Tỷ lệ ký quỹ (%)</label><input id="g-depositRate" type="number" min="0" max="100" step="0.1" value="${g?.depositRate||0}"></div>
         <div class="field"><label>Ngày phát hành</label><input id="g-issueDate" type="date" value="${g?.issueDate?new Date(g.issueDate).toISOString().slice(0,10):''}"></div>
         <div class="field"><label>Ngày hết hạn</label><input id="g-expiryDate" type="date" value="${g?.expiryDate?new Date(g.expiryDate).toISOString().slice(0,10):''}"></div>
@@ -10636,7 +10782,7 @@ window.openGuaranteeReleaseForm = function(cid, gid){
       Tiền ký quỹ: <b>${fmtVND(cc.depositAmount)}</b> · Đã giải tỏa: <b>${fmtVND(cc.totalReleased)}</b> · Còn phong tỏa: <b style="color:#1e40af">${fmtVND(cc.blockedNow)}</b></div>
       <div class="grid-2">
         <div class="field"><label>Ngày giải tỏa</label><input id="gr-date" type="date" value="${new Date().toISOString().slice(0,10)}"></div>
-        <div class="field"><label>Số tiền giải tỏa (VNĐ) *</label><input id="gr-amount" type="number" min="0" max="${cc.blockedNow}" value=""></div>
+        <div class="field"><label>Số tiền giải tỏa (đ) *</label><input id="gr-amount" type="text" inputmode="numeric" data-money value="" placeholder="Tối đa ${fmtMoney(cc.blockedNow)}"></div>
       </div>
       <div class="field"><label>Ghi chú</label><input id="gr-note" placeholder="VD: Giải tỏa lần 1 sau nghiệm thu giai đoạn..."></div>
     `,
@@ -10722,6 +10868,114 @@ function _ensurePayDocs(c){
     }
   });
 }
+/* ============================================================
+   [v18-2] MỤC TÀI CHÍNH CỦA DỰ ÁN
+   Toàn bộ phần Tài chính đã CHUYỂN từ cửa sổ "Sửa thông tin dự án"
+   ra tab "Tài chính" này.
+   ============================================================ */
+function _financeHtml(c, canEdit){
+  const cc = contractCalc(c);
+  const pays = (c.payments||[]);
+  const totAppr = pays.reduce((s,p)=>s+(Number(p.amount)||0),0);
+  const totRecv = pays.reduce((s,p)=>s+((p.amountReceived!==undefined&&p.amountReceived!=='')?Number(p.amountReceived)||0:0),0);
+  const baseValue  = cc.baseValue;   // Giá trị hợp đồng ban đầu
+  const addenSum   = cc.addenSum;    // Giá trị phụ lục hợp đồng
+  const finalValue = cc.value;       // Giá trị hợp đồng CUỐI CÙNG = ban đầu + phụ lục
+  const settlement = Number(c.settlementValue)||0;  // Giá trị quyết toán
+  // Cơ sở còn lại: nếu đã có giá trị quyết toán thì lấy quyết toán, ngược lại lấy GT cuối cùng
+  const basis = settlement>0 ? settlement : finalValue;
+  const remainAfterPay = basis - totAppr;           // Giá trị còn lại sau thanh toán
+  const card=(label,val,color,note)=>`<div class="stat-card" style="border-left:5px solid ${color}">
+      <div class="label">${label}</div>
+      <div class="value" style="font-size:17px;color:${color}">${fmtVND(val)||'0 đ'}</div>
+      ${note?`<div class="hint muted">${note}</div>`:''}
+    </div>`;
+  const addens = (c.addendums||[]);
+  const addenRows = addens.map((a,i)=>{
+    if(!canEdit){
+      return `<tr><td class="center"><b>PL ${i+1}</b></td><td>${a.signDate?fmtDate(a.signDate):'—'}</td>
+        <td class="center">${a.extensionDays||0}</td><td class="right">${(Number(a.valueChange)||0)>=0?'+':''}${fmtVND(a.valueChange||0)}</td>
+        <td class="muted">${escapeHtml(a.note||'')}</td><td></td></tr>`;
+    }
+    return `<tr>
+      <td class="center"><b>PL ${i+1}</b></td>
+      <td><input type="date" value="${a.signDate?new Date(a.signDate).toISOString().slice(0,10):''}" onchange="updFinAdden('${c.id}',${i},'signDate',this.value)" style="width:135px"></td>
+      <td><input type="number" value="${a.extensionDays||''}" onchange="updFinAdden('${c.id}',${i},'extensionDays',this.value)" placeholder="VD: 30" style="width:85px;text-align:center"></td>
+      <td><input type="text" inputmode="numeric" data-money value="${fmtMoney(a.valueChange)}" onchange="updFinAdden('${c.id}',${i},'valueChange',this.value)" placeholder="+ tăng / - giảm" style="width:150px;text-align:right"></td>
+      <td><input value="${escapeHtml(a.note||'')}" onchange="updFinAdden('${c.id}',${i},'note',this.value)" placeholder="Nội dung phụ lục"></td>
+      <td><button class="btn sm danger" onclick="delFinAdden('${c.id}',${i})">🗑</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty">Chưa có phụ lục hợp đồng</td></tr>';
+
+  return `<div class="card" style="border-left:5px solid #1e3a8a">
+    <h3 style="border:none;padding:0;margin-bottom:8px">💰 Tài chính dự án</h3>
+    <div class="hint" style="margin-bottom:10px">[v18] Toàn bộ thông tin tài chính của dự án đã chuyển từ cửa sổ <b>"Sửa thông tin dự án"</b> ra đây. Số liệu các lần thanh toán được cập nhật ở bảng <b>Theo dõi thanh toán</b> bên dưới.</div>
+    <div class="stat-grid" style="margin-bottom:12px">
+      ${card('Giá trị hợp đồng CUỐI CÙNG', finalValue, '#1e3a8a', 'Ban đầu + Phụ lục')}
+      ${card('Giá trị hợp đồng ban đầu', baseValue, '#0f766e','')}
+      ${card('Giá trị phụ lục hợp đồng', addenSum, '#b45309', addens.length+' phụ lục')}
+      ${card('Giá trị quyết toán', settlement, '#7c3aed', settlement>0?'':'chưa quyết toán')}
+      ${card('Giá trị CÒN LẠI sau thanh toán', remainAfterPay, remainAfterPay>0?'#dc2626':'#16a34a', 'Đã thanh toán: '+fmtVND(totAppr))}
+    </div>
+    <div class="grid-3">
+      <div class="field"><label>Giá trị hợp đồng ban đầu (đ)</label>
+        <input type="text" inputmode="numeric" data-money value="${fmtMoney(c.value)}" ${canEdit?'':'disabled'} onchange="saveFinField('${c.id}','value',this.value)" style="text-align:right">
+      </div>
+      <div class="field"><label>Tình trạng quyết toán</label>
+        <select ${canEdit?'':'disabled'} onchange="saveFinField('${c.id}','settlementStatus',this.value)">
+          ${SETTLEMENT_STATUS.map(x=>`<option value="${x.v}" ${c.settlementStatus===x.v?'selected':''}>${x.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Giá trị quyết toán (đ)</label>
+        <input type="text" inputmode="numeric" data-money value="${fmtMoney(c.settlementValue)}" ${canEdit?'':'disabled'} onchange="saveFinField('${c.id}','settlementValue',this.value)" style="text-align:right">
+      </div>
+    </div>
+    <h3 style="margin-top:6px">📑 Phụ lục hợp đồng ${canEdit?`<button class="btn sm success" style="float:right" onclick="addFinAdden('${c.id}')">+ Thêm phụ lục</button>`:''}</h3>
+    <div class="hint" style="margin-bottom:6px">Phụ lục cập nhật <b>gia hạn thời gian</b> và <b>thay đổi giá trị hợp đồng</b> (số dương = tăng, số âm = giảm). Giá trị HĐ cuối cùng = Ban đầu + Σ phụ lục.</div>
+    <div class="tbl-wrap"><table style="font-size:12px">
+      <thead><tr><th>Phụ lục #</th><th>Ngày ký</th><th>Gia hạn (ngày)</th><th>GT thay đổi (đ)</th><th>Ghi chú</th><th></th></tr></thead>
+      <tbody>${addenRows}
+        <tr style="background:#dbeafe;font-weight:700"><td colspan="2" class="right">TỔNG PHỤ LỤC:</td><td class="center">${cc.totalExtensionDays} ngày</td><td class="right">${addenSum>=0?'+':''}${fmtVND(addenSum)}</td><td colspan="2"></td></tr>
+      </tbody>
+    </table></div>
+    <div style="background:#f1f5f9;padding:10px;border-radius:8px;margin-top:10px;font-size:13px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px">
+      <div><div class="muted">Tổng đã thanh toán (theo HS duyệt)</div><b style="color:#1e3a8a">${fmtVND(totAppr)||'0 đ'}</b></div>
+      <div><div class="muted">Tổng thực nhận</div><b style="color:#16a34a">${fmtVND(totRecv)||'0 đ'}</b></div>
+      <div><div class="muted">Cơ sở tính còn lại</div><b>${settlement>0?'Giá trị quyết toán':'Giá trị HĐ cuối cùng'}</b></div>
+      <div><div class="muted">Còn lại sau thanh toán</div><b style="color:${remainAfterPay>0?'#dc2626':'#16a34a'}">${fmtVND(remainAfterPay)||'0 đ'}</b></div>
+    </div>
+  </div>`;
+}
+window.saveFinField = function(cid, field, value){
+  if(currentUser()?.role==='employee'){ toast('Bạn không có quyền','error'); return; }
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  if(field==='value'||field==='settlementValue') c[field]=Number(String(value).replace(/[^\d-]/g,''))||0;
+  else c[field]=value;
+  saveDB(db); renderPopupBody(); toast('Đã lưu thông tin tài chính');
+};
+window.addFinAdden = function(cid){
+  if(currentUser()?.role==='employee'){ toast('Bạn không có quyền','error'); return; }
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c) return;
+  c.addendums = c.addendums||[];
+  c.addendums.push({signDate:Date.now(), extensionDays:0, valueChange:0, note:''});
+  saveDB(db); renderPopupBody();
+};
+window.updFinAdden = function(cid, i, field, value){
+  if(currentUser()?.role==='employee'){ toast('Bạn không có quyền','error'); return; }
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c||!c.addendums||!c.addendums[i]) return;
+  if(field==='signDate') c.addendums[i].signDate = value?new Date(value).getTime():Date.now();
+  else if(field==='extensionDays') c.addendums[i].extensionDays = Number(value)||0;
+  else if(field==='valueChange') c.addendums[i].valueChange = Number(String(value).replace(/[^\d-]/g,''))||0;
+  else c.addendums[i][field]=value;
+  saveDB(db); renderPopupBody();
+};
+window.delFinAdden = function(cid, i){
+  if(currentUser()?.role==='employee'){ toast('Bạn không có quyền','error'); return; }
+  if(!confirm('Xóa phụ lục hợp đồng này?')) return;
+  const db=getDB(); const c=db.contracts.find(x=>x.id===cid); if(!c||!c.addendums) return;
+  c.addendums.splice(i,1);
+  saveDB(db); renderPopupBody();
+};
 /* [C2] THEO DÕI THANH TOÁN — bảng thanh toán chuyển từ form Sửa HĐ sang đây */
 function _payTrackerHtml(c, canEdit){
   const pays=(c.payments||[]);
@@ -10742,9 +10996,9 @@ function _payTrackerHtml(c, canEdit){
     return `<tr>
       <td class="center">${i+1}</td>
       <td><input type="date" value="${p.date?new Date(p.date).toISOString().slice(0,10):''}" onchange="updPayTrack('${c.id}',${i},'date',this.value)" style="width:130px"></td>
-      <td><input type="number" value="${p.amount??''}" onchange="updPayTrack('${c.id}',${i},'amount',this.value)" style="width:130px;text-align:right" title="Số tiền theo hồ sơ được duyệt"></td>
-      <td><input type="number" value="${p.amountReceived??''}" onchange="updPayTrack('${c.id}',${i},'amountReceived',this.value)" style="width:130px;text-align:right" title="Số tiền thực nhận về tài khoản"></td>
-      <td><input type="number" value="${p.taxVanglai??''}" onchange="updPayTrack('${c.id}',${i},'taxVanglai',this.value)" style="width:110px;text-align:right"></td>
+      <td><input type="text" inputmode="numeric" data-money value="${fmtMoney(p.amount)}" onchange="updPayTrack('${c.id}',${i},'amount',this.value)" style="width:140px;text-align:right" title="Số tiền theo hồ sơ được duyệt — tự chèn dấu . phân cách"></td>
+      <td><input type="text" inputmode="numeric" data-money value="${fmtMoney(p.amountReceived)}" onchange="updPayTrack('${c.id}',${i},'amountReceived',this.value)" style="width:140px;text-align:right" title="Số tiền thực nhận về tài khoản"></td>
+      <td><input type="text" inputmode="numeric" data-money value="${fmtMoney(p.taxVanglai)}" onchange="updPayTrack('${c.id}',${i},'taxVanglai',this.value)" style="width:120px;text-align:right"></td>
       <td><input value="${escapeHtml(p.invoiceNo||'')}" onchange="updPayTrack('${c.id}',${i},'invoiceNo',this.value)" style="width:110px"></td>
       <td><input value="${escapeHtml(p.note||'')}" onchange="updPayTrack('${c.id}',${i},'note',this.value)"></td>
       <td><button class="btn sm danger" onclick="delPayTrack('${c.id}',${i})">🗑</button></td>
@@ -10826,6 +11080,7 @@ function renderPopupPayDocs(host, cid){
   }).join('') || '<tr><td colspan="7" class="empty">Chưa có hồ sơ</td></tr>';
 
   host.innerHTML = `
+    ${_financeHtml(c, canEdit)}
     ${_payTrackerHtml(c, canEdit)}
 
     <div class="help-text">💼 <b>Hồ sơ thanh toán dự án</b> — theo dõi tình trạng nhận hồ sơ và hồ sơ gốc về công ty. Mỗi loại hồ sơ ghi nhận: đã/chưa lấy về, ngày nhận, người nhận và ghi chú. 6 mục mặc định không thể xóa; có thể bổ sung loại tùy chỉnh ở dưới.</div>
