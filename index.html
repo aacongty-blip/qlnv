@@ -7,6 +7,10 @@
 <title>EMC · AA · TẢN VIÊN | Quản lý nhân sự</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTIiIGZpbGw9IiMxZTNhOGEiLz48cmVjdCB4PSIxNCIgeT0iMTAiIHdpZHRoPSIzNiIgaGVpZ2h0PSI0NCIgcng9IjQiIGZpbGw9IiNmZmYiLz48cmVjdCB4PSIyNCIgeT0iNiIgd2lkdGg9IjE2IiBoZWlnaHQ9IjkiIHJ4PSIyIiBmaWxsPSIjM2I4MmY2Ii8+PHJlY3QgeD0iMjAiIHk9IjIyIiB3aWR0aD0iMjQiIGhlaWdodD0iMyIgcng9IjEuNSIgZmlsbD0iIzFlM2E4YSIvPjxyZWN0IHg9IjIwIiB5PSIzMCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjMiIHJ4PSIxLjUiIGZpbGw9IiM2NDc0OGIiLz48cmVjdCB4PSIyMCIgeT0iMzgiIHdpZHRoPSIxNiIgaGVpZ2h0PSIzIiByeD0iMS41IiBmaWxsPSIjNjQ3NDhiIi8+PGNpcmNsZSBjeD0iNDYiIGN5PSI0NiIgcj0iMTEiIGZpbGw9IiMxNmEzNGEiLz48cGF0aCBkPSJNNDEgNDYgbDMuNSAzLjUgTDUyIDQyIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMyIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<!-- [v21-2] Bản mở rộng của SheetJS: GHI ĐƯỢC định dạng (kẻ ô, tô màu, in đậm, canh lề)
+     vào file .xlsx. Là bản fork tương thích hoàn toàn với xlsx 0.18.5 nên mọi chức năng
+     xuất Excel sẵn có vẫn chạy bình thường. Nếu tải lỗi, phần mềm tự dùng lại bản gốc. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <!-- Firebase SDK (compat — chạy đồng bộ với script thường, không bị vấn đề timing của type=module) -->
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -1283,6 +1287,13 @@ function renderNav(u){
     items.push({k:'my-info', t:'Thông tin cá nhân', i:'👤'});
     items.push({k:'my-kpi', t:'KPI của tôi', i:'🎯'});
   }
+  // [v21-1] Người được Admin phân quyền CHẤM CÔNG (vai trò NV/Trưởng phòng) được thêm
+  // mục "Báo cáo & Xuất Excel" vì họ là người chốt bảng công/lương.
+  if(canSeeSalary() && !items.some(it=>it.k==='reports')){
+    const _ci = items.findIndex(it=>it.k==='dashboard');
+    const _rep = {k:'reports', t:'Báo cáo & Xuất Excel', i:'📑'};
+    if(_ci>=0) items.splice(_ci+1, 0, _rep); else items.push(_rep);
+  }
   // Đặt 'Quản lý Thiết kế PCCC' ngay dưới 'Quản lý dự án'
   const _ciPCCC = items.findIndex(it=>it.k==='contracts');
   const _pcccItem = {k:'pccc-design', t:'Quản lý Thiết kế PCCC', i:'🏗️'};
@@ -1322,6 +1333,11 @@ const ROLE_VIEWS = {
   employee: ['my-tasks','contracts','dashboard','my-info','my-kpi','change-pass','pccc-design']
 };
 function canAccessView(role, key){
+  // [v21-1] Người được Admin phân quyền CHẤM CÔNG cũng vào được "Báo cáo & Xuất Excel"
+  // (họ là người chốt bảng công/lương), dù vai trò là nhân viên.
+  if(key==='reports'){
+    try{ if(typeof canSeeSalary==='function' && canSeeSalary()) return true; }catch(e){}
+  }
   return (ROLE_VIEWS[role]||[]).includes(key);
 }
 function navTo(v){ currentView=v; render(); }
@@ -1800,6 +1816,7 @@ function viewDashboard(main, u){
     return {...sal, attendance: att, workingDays, attendanceRatio: cdRatio, baseAdjusted, finalTotal};
   }
 
+  const _seeSal = canSeeSalary();   // [v21-1] chỉ admin / quản lý / người được phân quyền chấm công
   const attRowsHtml = users.map(emp=>{
     const sal = computeSalaryWithAttendance(emp);
     const c=getCompany(emp.companyId);
@@ -1813,7 +1830,7 @@ function viewDashboard(main, u){
       <td class="center" style="background:#fef3c7;font-weight:600">${sal.attendance.otHours||0}</td>
       <td class="center"><b>${sal.attendance.totalDays}/${workingDays}</b></td>
       <td class="center">${(sal.attendanceRatio*100).toFixed(0)}%</td>
-      ${u.role==='admin' ? `
+      ${_seeSal ? `
         <td class="right">${fmtVND(sal.base + sal.allowance)}</td>
         <td class="right">${fmtVND(sal.baseAdjusted)}</td>
         <td class="right">${fmtVND(Math.round(sal.totalKpiActual))}</td>
@@ -1835,12 +1852,13 @@ function viewDashboard(main, u){
       <h1>🕐 Chấm công · ${fmtPeriod(period)}</h1>
       <div class="actions">
         <input type="month" id="att-period" value="${period}" onchange="setAttPeriod(this.value)" style="width:auto" title="Chọn tháng muốn xem lại — toàn bộ bảng công, lương và danh sách chờ duyệt sẽ hiển thị theo tháng này">
+        ${canSeeSalary()?`
         <button class="btn" onclick="exportAttendanceExcel()">📊 Xuất Excel lương + chấm công</button>
-        <button class="btn outline" onclick="navTo('reports')">📑 Báo cáo lương</button>
+        <button class="btn outline" onclick="navTo('reports')">📑 Báo cáo lương</button>`:''}
       </div>
     </div>
     ${u.role!=='employee'?`<div class="help-text" style="background:#eef2ff;border-color:#c7d2fe">🟢🔴 <b>Quy trình chấm công của nhân viên:</b> NV đăng nhập sẽ thấy thẻ "Tự chấm công" với các nút <b>Chấm giờ vào</b>, <b>🔴 Chấm giờ VỀ</b> (giờ làm = giờ về − giờ vào − 1,5h nghỉ trưa), <b>🌴 Xin nghỉ</b> (duyệt → O có phép; từ chối → K không phép, tính KPI), <b>Đăng ký tăng ca</b> (kèm lý do) và <b>Trình bày lý do đến muộn</b> (muộn &lt;1h: xác nhận đi muộn; muộn &gt;1h: chỉ tính ½ công nếu không được duyệt lý do). Người được phân quyền duyệt sẽ thấy các thẻ chờ duyệt tương ứng bên dưới; NV quên chấm giờ về hiện ở thẻ 🚨 và bị trừ 1 điểm thái độ/ngày. Rê chuột vào ô trong lưới chấm công để xem <b>tên người phê duyệt từng mục</b>.</div>`:''}
-    <div class="help-text">📅 <b>Chấm công tháng:</b> bấm "📅 Chấm" để mở lưới chấm công cho từng NV. Quy ước: <b>P</b> = công đủ ngày · <b>H</b> = nửa ngày · <b>O</b> = nghỉ CÓ phép · <b style="color:#dc2626">K</b> = nghỉ KHÔNG phép (tính vào KPI Ý thức) · <b>(trống)</b> = vắng/CN/ngày nghỉ. Muộn quá 1 tiếng không có lý do được duyệt → ngày đó chỉ tính <b>½ công</b>. <b>Lương cuối tháng</b> = (Lương cứng + Hỗ trợ) × Tỷ lệ công + Σ Thưởng KPI từng mảng.</div>
+    <div class="help-text">📅 <b>Chấm công tháng:</b> bấm "📅 Chấm" để mở lưới chấm công cho từng NV. Quy ước: <b>P</b> = công đủ ngày · <b>H</b> = nửa ngày · <b>O</b> = nghỉ CÓ phép · <b style="color:#dc2626">K</b> = nghỉ KHÔNG phép (tính vào KPI Ý thức) · <b>(trống)</b> = vắng/CN/ngày nghỉ. Muộn quá 1 tiếng không có lý do được duyệt → ngày đó chỉ tính <b>½ công</b>. ${canSeeSalary()?'<b>Lương cuối tháng</b> = (Lương cứng + Hỗ trợ) × Tỷ lệ công + Σ Thưởng KPI từng mảng.':'<b>🔒 Thông tin lương được bảo mật</b> — chỉ Admin, Quản lý và người được phân quyền chấm công mới xem/xuất được bảng lương.'}</div>
     ${selfCheckInHtml}
     ${pendingApprovalHtml}
     <div class="stat-grid">
@@ -1856,7 +1874,7 @@ function viewDashboard(main, u){
           <th>Công đủ (P)</th><th>Nửa ngày (H)</th><th>Phép (O)</th>
           <th style="background:#f59e0b">Tăng ca (giờ)</th>
           <th>Tổng công</th><th>Tỷ lệ</th>
-          ${u.role==='admin' ? '<th class="right">Lương + Hỗ trợ</th><th class="right">Lương theo công</th><th class="right">Σ KPI</th><th class="right">TỔNG LƯƠNG</th>' : ''}
+          ${_seeSal ? '<th class="right">Lương + Hỗ trợ</th><th class="right">Lương theo công</th><th class="right">Σ KPI</th><th class="right">TỔNG LƯƠNG</th>' : ''}
           <th></th>
         </tr></thead>
         <tbody>${attRowsHtml || '<tr><td colspan="13" class="empty">Chưa có dữ liệu</td></tr>'}</tbody>
@@ -2009,7 +2027,27 @@ function renderAttGrid(empId, period, isReadOnly){
       </button>
       ${badge}
       ${stIcons}
-      ${(!isReadOnly)?`<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px;display:flex;align-items:center;gap:2px;justify-content:center" title="[v18-4] NGƯỜI PHÊ DUYỆT được ĐIỀU CHỈNH số giờ tăng ca của nhân viên. Nhân viên vẫn chỉ được đề xuất OT, không tự sửa.">OT:<input type="number" min="0" max="12" step="0.5" value="${ot||0}" onchange="updateAttOT('${empId}','${period}',${d},this.value)" onclick="event.stopPropagation()" style="width:34px;font-size:10px;padding:0 1px;border:1px solid rgba(255,255,255,.5);border-radius:3px;background:rgba(255,255,255,.55);color:#0f172a;text-align:center">h</div>`:`<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px" title="[I.1] Giờ tăng ca CHỈ qua đề xuất của NV + phê duyệt — mặc định 0h">OT: <b>${ot||0}h</b></div>`}
+      ${(()=>{
+        // [v21-3] Ô TĂNG CA chỉ hiện ở ngày ĐÃ CÓ dữ liệu chấm công (mã công / giờ vào / đơn OT / giờ OT).
+        // Ngày trống KHÔNG hiện "OT: 0 h" nữa để tránh hiểu nhầm là số mặc định.
+        const _hasData = !!(cellRec && (cellRec.code || cellRec.checkIn || cellRec.otReq || Number(cellRec.ot)>0));
+        if(!_hasData) return '';
+        // Nguồn gốc bản ghi OT — để người duyệt biết ai đề xuất, ai duyệt trước khi sửa/xóa
+        let _otSrc = '';
+        if(cellRec.otReq){
+          const _nm = id=>((db.users.find(x=>x.id===id)||{}).name)||'?';
+          _otSrc = `Tăng ca ${cellRec.otReq.hours||0}h — đơn của ${_nm(cellRec.otReq.requestedBy)}`
+                 + (cellRec.otReq.note?` ("${cellRec.otReq.note}")`:'')
+                 + (cellRec.otReq.status==='approved'?` — ĐÃ DUYỆT bởi ${_nm(cellRec.otReq.decidedBy)}${cellRec.otReq.decidedAt?' ngày '+fmtDate(cellRec.otReq.decidedAt):''}`
+                    :(cellRec.otReq.status==='rejected'?' — đã TỪ CHỐI':' — đang CHỜ DUYỆT'));
+        } else if(Number(cellRec.ot)>0 && cellRec.otBy){
+          _otSrc = `Tăng ca ${cellRec.ot}h — người chấm công nhập tay: ${((db.users.find(x=>x.id===cellRec.otBy)||{}).name)||'?'}`;
+        }
+        if(isReadOnly){
+          return `<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px" title="${escapeHtml(_otSrc||'Giờ tăng ca chỉ có khi nhân viên đề xuất và được phê duyệt')}">OT: <b>${ot||0}h</b></div>`;
+        }
+        return `<div style="font-size:10px;margin-top:2px;background:rgba(255,255,255,.3);border-radius:4px;padding:1px 2px;display:flex;align-items:center;gap:2px;justify-content:center" title="${escapeHtml(_otSrc||'[v18-4] NGƯỜI PHÊ DUYỆT được ĐIỀU CHỈNH số giờ tăng ca. Nhân viên chỉ được đề xuất OT, không tự sửa.')}">OT:<input type="number" min="0" max="12" step="0.5" value="${ot||0}" onchange="updateAttOT('${empId}','${period}',${d},this.value)" onclick="event.stopPropagation()" style="width:32px;font-size:10px;padding:0 1px;border:1px solid rgba(255,255,255,.5);border-radius:3px;background:rgba(255,255,255,.55);color:#0f172a;text-align:center">h${Number(ot)>0?`<button onclick="event.stopPropagation();clearAttOT('${empId}','${period}',${d})" title="Xóa hẳn bản ghi tăng ca của ngày này (kể cả đơn đã duyệt)" style="border:none;background:#dc2626;color:#fff;border-radius:3px;font-size:9px;line-height:1;padding:2px 3px;cursor:pointer">🗑</button>`:''}</div>`;
+      })()}
       ${(()=>{const _cr=attDayCredit(cellRec); return (_cr && _cr.ratio!==null && _cr.ratio<1)?`<div style="font-size:9px;margin-top:1px;background:#7c3aed;color:#fff;border-radius:3px;font-weight:700" title="[v18-4] Về sớm hơn 8 tiếng — công tính theo tỷ lệ ${_cr.worked}h ÷ 8h">⏱ ${_cr.credit} công (${_cr.worked}h)</div>`:'';})()}
       ${(!isReadOnly)?`<input type="number" min="0" max="5" step="0.5" value="${(cellRec&&cellRec.workCoef)||''}" onchange="updateAttCoef('${empId}','${period}',${d},this.value)" placeholder="HS lễ/CN" title="[I.6] HỆ SỐ đi làm ngày LỄ / CHỦ NHẬT — người chấm công nhập tay (VD: 2 = lương ×2). Để trống = ngày thường." style="width:100%;font-size:10px;padding:1px 2px;margin-top:2px;border:1px solid rgba(255,255,255,.4);border-radius:4px;background:rgba(255,255,255,.3);color:inherit;text-align:center" onclick="event.stopPropagation()">`:((cellRec&&Number(cellRec.workCoef)>0&&Number(cellRec.workCoef)!==1)?`<div style="font-size:9px;margin-top:1px;background:#fbbf24;color:#78350f;border-radius:3px;font-weight:700">HS ×${cellRec.workCoef} (lễ/CN)</div>`:'')}
     </div>`;
@@ -2034,8 +2072,8 @@ function renderAttGrid(empId, period, isReadOnly){
   const ratio = wd>0 ? (total/wd*100) : 0;
   document.getElementById('att-summary').innerHTML = `
     <b>Tổng công:</b> P=${p} ngày · H=${h} nửa ngày · O=${o} phép · <b style="color:#dc2626">K=${k} nghỉ không phép</b> ·
-    <b style="color:#f59e0b">Tăng ca: ${totalOT}h</b> ·
     <b>Quy đổi: ${total} công</b> / ${wd} ngày làm việc → <b>${ratio.toFixed(1)}%</b>
+    <div class="hint" style="margin-top:4px;color:#b45309"><b>⏱ Về tăng ca:</b> phần mềm KHÔNG mặc định giờ tăng ca cho bất kỳ ai. Giờ tăng ca chỉ phát sinh khi <b>nhân viên tự đăng ký kèm lý do</b> và <b>được người có quyền phê duyệt</b>; sau đó người chấm công có thể điều chỉnh hoặc xóa trực tiếp ở ô <b>OT</b> của từng ngày (rê chuột vào ô để xem ai đề xuất, ai đã duyệt). Ngày chưa chấm công sẽ không hiện ô OT.</div>
     <div class="hint" style="margin-top:4px">💡 Ngày có nhãn "⚠ muộn → ½ công": nhân viên đến muộn quá 1 tiếng không có lý do được duyệt nên chỉ tính nửa công. Duyệt lý do đi muộn ở trang Chấm công sẽ tự trả lại công đủ.</div>
     <div class="hint" style="margin-top:2px;color:#7c3aed"><b>[v18] Công lẻ theo giờ làm:</b> ngày nào nhân viên chấm giờ về sớm hơn 8 tiếng thì ngày công tính theo tỷ lệ <b>số giờ làm ÷ 8</b> (tự động từ giờ vào – giờ về – 1,5h nghỉ trưa). Tháng này có <b>${partialDays}</b> ngày công lẻ. Hệ số lễ/CN vẫn nhân thêm vào công đã quy đổi.</div>
   `;
@@ -2056,6 +2094,25 @@ window.updateAttCoef = function(empId, period, d, value){
   else delete db.attendance[empId][period][d];
   saveDB(db);
   renderAttGrid(empId, period);
+};
+/* [v21-3] Xóa hẳn bản ghi TĂNG CA của 1 ngày — kể cả đơn OT đã được duyệt trước đó */
+window.clearAttOT = async function(empId, period, d){
+  if(!canApproveAttendance()){ toast('Bạn không có quyền sửa tăng ca','error'); return; }
+  const db=getDB();
+  const cur = ((db.attendance[empId]||{})[period]||{})[d];
+  if(!cur || typeof cur!=='object'){ toast('Ngày này không có tăng ca','warn'); return; }
+  const _h = Number(cur.ot)||0;
+  const _src = cur.otReq ? `\n(Đơn tăng ca ${cur.otReq.hours||0}h${cur.otReq.note?' — "'+cur.otReq.note+'"':''}, trạng thái: ${cur.otReq.status})` : '';
+  if(!confirm(`Xóa hẳn tăng ca ${_h}h của ngày ${d}?${_src}\n\nSau khi xóa, ngày này về 0h tăng ca và không còn tính vào lương/KPI.`)) return;
+  const base = {...cur};
+  base.ot = 0;
+  delete base.otReq; delete base.otBy;
+  const hasOther = base.code || base.checkIn || base.lateReason || base.leaveReq || base.pendingCheckIn || base.workCoef;
+  if(hasOther) db.attendance[empId][period][d] = base;
+  else delete db.attendance[empId][period][d];
+  await saveDB(db);
+  renderAttGrid(empId, period);
+  toast(`Đã xóa tăng ca ${_h}h của ngày ${d}`);
 };
 window.updateAttOT = function(empId, period, d, value){
   if(!canApproveAttendance()){ toast('Bạn không có quyền nhập tăng ca','error'); return; }
@@ -2976,43 +3033,195 @@ window.rejectCheckIn = async function(empId, period, day){
   render();
 };
 
+/* ============================================================
+   [v21-2] TIỆN ÍCH ĐỊNH DẠNG FILE EXCEL
+   • Kẻ ô đầy đủ cho toàn bộ vùng dữ liệu
+   • Tự động giãn chiều rộng cột theo nội dung dài nhất của cột đó
+     (không để nội dung bị đè, che hoặc ẩn mất)
+   • Giữ nguyên công thức liên kết giữa các ô
+   ============================================================ */
+const XL_BORDER_THIN = {style:'thin', color:{rgb:'FF94A3B8'}};
+function _xlBox(extra){
+  return Object.assign({
+    border:{top:XL_BORDER_THIN, bottom:XL_BORDER_THIN, left:XL_BORDER_THIN, right:XL_BORDER_THIN}
+  }, extra||{});
+}
+/* Độ dài hiển thị của 1 ô (dấu tiếng Việt vẫn tính 1 ký tự) */
+function _xlCellLen(cell){
+  if(cell===null||cell===undefined) return 0;
+  if(typeof cell==='object'){
+    if(cell.f) return String(cell.v!==undefined?cell.v:'').length;   // ô công thức: đo theo giá trị
+    if(cell.v===null||cell.v===undefined) return 0;
+    if(typeof cell.v==='number'){
+      // số tiền hiển thị có dấu phân cách hàng nghìn → cộng thêm cho đủ chỗ
+      const n=Math.round(Math.abs(cell.v));
+      return String(n).length + Math.max(0, Math.floor((String(n).length-1)/3)) + (cell.v<0?1:0);
+    }
+    return String(cell.v).length;
+  }
+  if(typeof cell==='number'){
+    const n=Math.round(Math.abs(cell));
+    return String(n).length + Math.max(0, Math.floor((String(n).length-1)/3));
+  }
+  return String(cell).length;
+}
+/* Tính !cols tự động từ mảng 2 chiều (bỏ qua các dòng tiêu đề gộp ô) */
+function xlAutoWidth(aoa, opts){
+  opts = opts||{};
+  const skip = opts.skipRows||[];     // các dòng KHÔNG dùng để đo (VD: dòng tiêu đề merge)
+  const min = opts.min||6, max = opts.max||42, pad = opts.pad||3;
+  let nCol = 0;
+  aoa.forEach(r=>{ if(r && r.length>nCol) nCol=r.length; });
+  const cols=[];
+  for(let c=0;c<nCol;c++){
+    let w=0;
+    aoa.forEach((row,ri)=>{
+      if(!row || skip.indexOf(ri)>=0) return;
+      const len=_xlCellLen(row[c]);
+      if(len>w) w=len;
+    });
+    cols.push({wch: Math.min(max, Math.max(min, w+pad))});
+  }
+  return cols;
+}
+/* Kẻ ô + canh lề cho 1 vùng của worksheet */
+function xlApplyBorders(ws, r1, c1, r2, c2, styler){
+  for(let R=r1; R<=r2; R++){
+    for(let C=c1; C<=c2; C++){
+      const addr = XLSX.utils.encode_cell({r:R, c:C});
+      if(!ws[addr]) ws[addr] = {t:'s', v:''};      // tạo ô rỗng để đường kẻ liền mạch
+      const base = ws[addr].s || {};
+      ws[addr].s = Object.assign({}, base, _xlBox(styler?styler(R,C):null));
+    }
+  }
+}
+
 window.exportAttendanceExcel = function(){
+  // [v21-1] CHẶN LỘ LƯƠNG: nhân viên & trưởng phòng không được xuất bảng lương công ty
+  if(!canSeeSalary()){ toast('⛔ Bạn không có quyền xuất bảng lương của công ty','error'); return; }
   const db=getDB();
   const period = document.getElementById('att-period')?.value || thisPeriod();
   const [yy,mm] = period.split('-').map(Number);
   const wd = countWorkingDays(yy, mm);
-  const u = currentUser();
+  const me = currentUser();
   let users = db.users.filter(x=>x.role!=='admin'); // [YC3] đủ NV 3 công ty
-  const rows = [
-    ['BẢNG TỔNG HỢP CHẤM CÔNG & LƯƠNG · '+fmtPeriod(period)],
-    ['Số ngày làm việc trong tháng:', wd],
-    [],
-    ['STT','Mã NV','Họ và tên','Công ty','P (công đủ)','H (nửa ngày)','O (có phép)','K (không phép)','Tổng công','Tỷ lệ %','Lương cứng + Hỗ trợ','Lương theo công','Σ Thưởng KPI','TỔNG LƯƠNG']
-  ];
+
+  const HEAD = ['STT','Mã NV','Họ và tên','Công ty','P (công đủ)','H (nửa ngày)','O (có phép)','K (không phép)',
+                'Tăng ca (giờ)','Tổng công quy đổi','Tỷ lệ công','Lương cứng + Hỗ trợ','Lương theo công','Σ Thưởng KPI','TỔNG LƯƠNG'];
+  const NCOL = HEAD.length;                 // 15 cột: A..O
+  const R_TITLE = 0;                        // dòng 1
+  const R_WD    = 1;                        // dòng 2: số ngày công chuẩn (ô D2 — các công thức tham chiếu tới)
+  const R_INFO  = 2;                        // dòng 3: người xuất / ngày xuất
+  const R_HEAD  = 4;                        // dòng 5: tiêu đề bảng
+  const R_DATA  = 5;                        // dòng 6: bắt đầu dữ liệu
+
+  const aoa = [];
+  aoa[R_TITLE] = ['BẢNG TỔNG HỢP CHẤM CÔNG & LƯƠNG · '+fmtPeriod(period)];
+  // Nhãn dài đặt ở vùng gộp ô A2:C2 để không làm giãn cột STT; giá trị nằm ở ô D2
+  aoa[R_WD]    = ['Số ngày làm việc chuẩn trong tháng:', '', '', wd];
+  aoa[R_INFO]  = ['Người xuất: '+(me?me.name:'')+'   ·   Ngày xuất: '+fmtDateTime(Date.now())+'   ·   Kỳ lương: '+fmtPeriod(period)];
+  aoa[3]       = [];
+  aoa[R_HEAD]  = HEAD.slice();
+
+  const dataVals = [];   // giữ lại giá trị để tính độ rộng cột & ghi giá trị cho ô công thức
   users.forEach((emp,i)=>{
     const sal = computeSalaryMulti(emp, period);
     const rec = (db.attendance[emp.id]||{})[period]||{};
-    let p=0,h=0,o=0,k=0;
-    // [FIX] Đếm đúng cả bản ghi dạng object (tự chấm công) + quy tắc muộn >1h = nửa công
-    let wdays=0;
+    let p=0,h=0,o=0,k=0,otH=0,wdays=0;
     Object.values(rec).forEach(v=>{
       const info=attDayCredit(v);
       if(info.pending) return;
       const code=info.code;
       if(code==='P')p++; else if(code==='H')h++; else if(code==='O')o++; else if(code==='K')k++;
       const _cf = (typeof v==='object' && v!==null && Number(v.workCoef)>0) ? Number(v.workCoef) : 1;
-      wdays += info.credit*_cf;   // [v18-4] công lẻ theo giờ làm
+      wdays += info.credit*_cf;                                     // [v18-4] công lẻ theo giờ làm
+      otH   += (typeof v==='object' && v!==null) ? (Number(v.ot)||0) : 0;
     });
     const totalDays = Math.round(wdays*100)/100;
-    const ratio = wd>0 ? totalDays/wd : 1;
-    const baseAdj = Math.round((sal.base + sal.allowance) * Math.min(1, ratio));
-    const total = baseAdj + sal.totalKpiActual;
-    rows.push([i+1, emp.code||emp.username, emp.name, getCompany(emp.companyId).code, p, h, o, k, totalDays, (ratio*100).toFixed(1)+'%', sal.base+sal.allowance, baseAdj, Math.round(sal.totalKpiActual), Math.round(total)]);
+    const ratio     = wd>0 ? Math.min(1, totalDays/wd) : 1;
+    const baseSum   = Math.round(sal.base + sal.allowance);
+    const baseAdj   = Math.round(baseSum * ratio);
+    const kpiSum    = Math.round(sal.totalKpiActual);
+    const row = [i+1, emp.code||emp.username, emp.name, getCompany(emp.companyId).code,
+                 p, h, o, k, Math.round(otH*10)/10, totalDays, ratio, baseSum, baseAdj, kpiSum, baseAdj+kpiSum];
+    aoa[R_DATA+i] = row;
+    dataVals.push(row);
   });
+  const nRows   = users.length;
+  const R_TOTAL = R_DATA + nRows;                                   // dòng TỔNG CỘNG
+  aoa[R_TOTAL]  = ['', '', 'TỔNG CỘNG', '', 0,0,0,0,0,0,'', 0,0,0,0];
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const A  = (r,c)=>XLSX.utils.encode_cell({r:r, c:c});
+
+  // ---------- CÔNG THỨC LIÊN KẾT GIỮA CÁC Ô ----------
+  // Tỷ lệ công  = Tổng công quy đổi ÷ Số ngày công chuẩn (ô $B$2)
+  // Lương theo công = Lương cứng+Hỗ trợ × Tỷ lệ công
+  // TỔNG LƯƠNG  = Lương theo công + Σ Thưởng KPI
+  for(let i=0;i<nRows;i++){
+    const R = R_DATA+i, xl = R+1;                                   // xl = số dòng theo Excel (1-based)
+    ws[A(R,10)] = {t:'n', f:`IF($D$2=0,0,MIN(1,J${xl}/$D$2))`, v:dataVals[i][10], z:'0.0%'};
+    ws[A(R,12)] = {t:'n', f:`ROUND(L${xl}*K${xl},0)`,          v:dataVals[i][12], z:'#,##0'};
+    ws[A(R,14)] = {t:'n', f:`M${xl}+N${xl}`,                   v:dataVals[i][14], z:'#,##0'};
+    ws[A(R,11)].z = '#,##0';
+    ws[A(R,13)].z = '#,##0';
+  }
+  // Dòng TỔNG CỘNG = SUM của từng cột
+  if(nRows>0){
+    const f1 = R_DATA+1, f2 = R_TOTAL;                              // vùng dữ liệu theo Excel
+    [4,5,6,7,8,9,11,12,13,14].forEach(c=>{
+      const col = XLSX.utils.encode_col(c);
+      const sum = dataVals.reduce((sm,r)=>sm+(Number(r[c])||0),0);
+      ws[A(R_TOTAL,c)] = {t:'n', f:`SUM(${col}${f1}:${col}${f2})`, v:Math.round(sum*100)/100,
+                          z: (c>=11?'#,##0':undefined)};
+    });
+    // Tỷ lệ công bình quân = Tổng công ÷ (số NV × ngày công chuẩn)
+    ws[A(R_TOTAL,10)] = {t:'n', f:`IF($D$2=0,0,J${R_TOTAL+1}/($D$2*${nRows}))`,
+                         v: wd>0 ? dataVals.reduce((sm,r)=>sm+r[9],0)/(wd*nRows) : 0, z:'0.0%'};
+  }
+
+  // ---------- ĐỊNH DẠNG ----------
+  ws['!merges'] = [
+    {s:{r:R_TITLE,c:0}, e:{r:R_TITLE,c:NCOL-1}},   // tiêu đề trải hết bảng
+    {s:{r:R_WD   ,c:0}, e:{r:R_WD   ,c:2}},        // nhãn "Số ngày làm việc chuẩn..."
+    {s:{r:R_INFO ,c:0}, e:{r:R_INFO ,c:NCOL-1}}    // dòng thông tin người xuất / ngày xuất
+  ];
+  // Không đo 3 dòng đầu khi giãn cột — nhãn dài ở đó sẽ làm cột STT rộng vô lý
+  ws['!cols'] = xlAutoWidth(aoa, {skipRows:[R_TITLE, R_WD, R_INFO], min:7, max:38, pad:3});
+  ws['!rows'] = [];
+  ws['!rows'][R_TITLE] = {hpt:26};
+  ws['!rows'][R_HEAD]  = {hpt:32};
+  ws['!autofilter'] = {ref: XLSX.utils.encode_range({s:{r:R_HEAD,c:0}, e:{r:R_TOTAL-1,c:NCOL-1}})};
+
+  // Tiêu đề lớn
+  ws[A(R_TITLE,0)].s = {font:{bold:true, sz:15, color:{rgb:'FF1E3A8A'}}, alignment:{horizontal:'center', vertical:'center'}};
+  ws[A(R_WD,0)].s    = {font:{bold:true}, alignment:{horizontal:'left', vertical:'center'}};
+  ws[A(R_WD,3)].s    = _xlBox({font:{bold:true, color:{rgb:'FFB45309'}}, alignment:{horizontal:'center'},
+                               fill:{patternType:'solid', fgColor:{rgb:'FFFEF3C7'}}});
+  ws[A(R_INFO,0)].s  = {font:{italic:true, sz:10, color:{rgb:'FF475569'}}, alignment:{horizontal:'left'}};
+
+  // Kẻ ô toàn vùng bảng (tiêu đề → dòng tổng cộng)
+  xlApplyBorders(ws, R_HEAD, 0, R_TOTAL, NCOL-1, (R,C)=>{
+    if(R===R_HEAD){
+      return {font:{bold:true, color:{rgb:'FFFFFFFF'}, sz:11},
+              fill:{patternType:'solid', fgColor:{rgb:'FF1E3A8A'}},
+              alignment:{horizontal:'center', vertical:'center', wrapText:true}};
+    }
+    if(R===R_TOTAL){
+      return {font:{bold:true, color:{rgb:'FF1E3A8A'}},
+              fill:{patternType:'solid', fgColor:{rgb:'FFDBEAFE'}},
+              alignment:{horizontal:(C>=4?'right':'center'), vertical:'center'}};
+    }
+    const zebra = ((R-R_DATA)%2===1) ? {fill:{patternType:'solid', fgColor:{rgb:'FFF8FAFC'}}} : {};
+    const align = (C<=1||C===3) ? {horizontal:'center'} : (C===2 ? {horizontal:'left'} : {horizontal:'right'});
+    return Object.assign({alignment:Object.assign({vertical:'center'}, align)}, zebra,
+                         C===NCOL-1 ? {font:{bold:true, color:{rgb:'FF1E3A8A'}}} : {});
+  });
+
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Chấm công + Lương');
-  XLSX.writeFile(wb, `ChamCong_${period}.xlsx`);
-  toast('Đã xuất Excel chấm công + lương');
+  XLSX.utils.book_append_sheet(wb, ws, 'Chấm công + Lương');
+  XLSX.writeFile(wb, `ChamCong_Luong_${period}.xlsx`);
+  toast('Đã xuất Excel chấm công + lương (kẻ ô, tự giãn cột, giữ công thức)');
 };
 
 window.showEmployeeDetail = function(uid){
@@ -5191,6 +5400,7 @@ function renderKPIRows(){
         <td>
           <button class="btn sm success" onclick="openKPIForm('${e.id}','${period}','${asg.area}')">${ev?'Sửa KPI':'Chấm KPI'}</button>
           <button class="btn sm" style="background:#6366f1" title="Áp dụng số liệu tự động (tiến độ/đúng hạn/khối lượng + ý thức) cho riêng dòng này" onclick="applyAutoKPIOne('${e.id}','${period}','${asg.area}')">🔗 TĐ</button>
+          <button class="btn sm" style="background:#0f766e" title="[v21-4] Tổng hợp TỰ ĐỘNG toàn bộ công việc trong tháng theo từng chỉ tiêu KPI — mở cửa sổ riêng, xuất Excel/Word" onclick="openKpiTaskSummary('${e.id}','${period}','${asg.area}')">📋 Tổng hợp</button>
         </td>
       </tr>`);
     });
@@ -5198,6 +5408,342 @@ function renderKPIRows(){
   tbody.innerHTML = rows.join('');
 }
 window.reloadKPIPeriod = function(){ renderKPIRows(); };
+
+/* ============================================================
+   [v21-4] TỔNG HỢP CÔNG VIỆC THEO TỪNG CHỈ TIÊU KPI
+   Tự động gom toàn bộ công việc của nhân viên trong tháng, xếp vào ĐÚNG
+   chỉ tiêu KPI đã được gắn khi giao việc (1 việc gắn nhiều chỉ tiêu thì
+   xuất hiện ở tất cả các chỉ tiêu đó). Mỗi chỉ tiêu là 1 bảng con, mỗi
+   công việc là 1 dòng kèm: dự án, ngày giao, hạn, ngày hoàn thành,
+   trạng thái (hoàn thành / chưa xong / chậm tiến độ).
+   Mở ra CỬA SỔ RIÊNG và xuất được Excel / Word.
+   ============================================================ */
+function _kpiPeriodRange(period){
+  const [y,m]=period.split('-').map(Number);
+  return {from:new Date(y,m-1,1).getTime(), to:new Date(y,m,0,23,59,59,999).getTime()};
+}
+/* Công việc thuộc tháng: giao trong tháng HOẶC đến hạn trong tháng HOẶC hoàn thành trong tháng */
+function _taskInPeriod(t, range){
+  const inR = ts => ts && ts>=range.from && ts<=range.to;
+  return inR(t.createdAt) || inR(t.dueDate) || inR(t.confirmedAt||t.completedAt);
+}
+/* Phân loại trạng thái 1 công việc để tổng hợp */
+function _taskKpiStatus(t){
+  const done = t.status==='done';
+  const doneAt = t.confirmedAt || t.completedAt || null;
+  if(done){
+    if(t.dueDate && doneAt && doneAt > t.dueDate) return {key:'done_late', label:'Hoàn thành TRỄ hạn', css:'#b45309', bg:'#fef3c7'};
+    return {key:'done_ontime', label:'Hoàn thành đúng hạn', css:'#166534', bg:'#dcfce7'};
+  }
+  if(t.dueDate && t.dueDate < Date.now()) return {key:'overdue', label:'QUÁ HẠN, chưa xong', css:'#991b1b', bg:'#fee2e2'};
+  let behind=false; try{ behind = (typeof taskIsBehind==='function') && taskIsBehind(t); }catch(e){}
+  if(behind) return {key:'behind', label:'Chậm tiến độ', css:'#9a3412', bg:'#ffedd5'};
+  return {key:'doing', label:'Đang thực hiện', css:'#1e40af', bg:'#dbeafe'};
+}
+/* Dựng dữ liệu tổng hợp: mỗi chỉ tiêu KPI → danh sách công việc đã gắn */
+function buildKpiTaskSummary(userId, period, area){
+  const db=getDB();
+  const emp=db.users.find(x=>x.id===userId);
+  const range=_kpiPeriodRange(period);
+  const items=(db.kpiTemplates[area]||[]);
+  const myTasks=(db.tasks||[]).filter(t=>t.assigneeId===userId && _taskInPeriod(t, range));
+  const rowOf = t=>{
+    const proj = t.projectId ? db.contracts.find(c=>c.id===t.projectId) : null;
+    const st = _taskKpiStatus(t);
+    const appr = t.approverId ? db.users.find(u=>u.id===t.approverId) : null;
+    const giver = db.users.find(u=>u.id===t.createdBy);
+    return {
+      id:t.id, title:t.title||'',
+      project: proj ? (proj.name||proj.code||'') : 'Việc chung (không thuộc dự án)',
+      projectCode: proj ? (proj.code||'') : '',
+      createdAt: t.createdAt||null,
+      dueDate: t.dueDate||null,
+      doneAt: t.confirmedAt || t.completedAt || null,
+      progress: Math.max(0, Math.min(100, Number(t.progress)||0)),
+      statusKey: st.key, statusLabel: st.label, statusCss: st.css, statusBg: st.bg,
+      approver: appr ? appr.name : '', giver: giver ? giver.name : '',
+      note: t.note||''
+    };
+  };
+  const groups = items.map(it=>{
+    const linked = myTasks.filter(t=>{
+      const names = Array.isArray(t.kpiItemNames) ? t.kpiItemNames : (t.kpiItemName ? [t.kpiItemName] : []);
+      return names.indexOf(it.name)>=0;
+    });
+    const rows = linked.map(rowOf).sort((a,b)=>(a.dueDate||a.createdAt||0)-(b.dueDate||b.createdAt||0));
+    const cnt = k=>rows.filter(r=>r.statusKey===k).length;
+    return {
+      name: it.name, unit: it.unit||'', weight: it.weight||0, target: it.target,
+      rows,
+      stat: {
+        total: rows.length,
+        doneOnTime: cnt('done_ontime'), doneLate: cnt('done_late'),
+        overdue: cnt('overdue'), behind: cnt('behind'), doing: cnt('doing')
+      }
+    };
+  });
+  // Công việc CHƯA gắn chỉ tiêu nào — liệt kê riêng để người chấm biết mà bổ sung liên kết
+  const linkedIds = new Set();
+  groups.forEach(g=>g.rows.forEach(r=>linkedIds.add(r.id)));
+  const unlinked = myTasks.filter(t=>!linkedIds.has(t.id)).map(rowOf)
+                          .sort((a,b)=>(a.dueDate||a.createdAt||0)-(b.dueDate||b.createdAt||0));
+  const all = myTasks.map(rowOf);
+  const c = k=>all.filter(r=>r.statusKey===k).length;
+  return {
+    emp, period, area, areaName:(getArea(area)||{}).name||area,
+    company: emp?getCompany(emp.companyId).name:'',
+    groups, unlinked,
+    overall:{ total: all.length, doneOnTime:c('done_ontime'), doneLate:c('done_late'),
+              overdue:c('overdue'), behind:c('behind'), doing:c('doing') },
+    generatedAt: Date.now(), generatedBy: (currentUser()||{}).name||''
+  };
+}
+/* Mở CỬA SỔ RIÊNG hiển thị bảng tổng hợp */
+window.openKpiTaskSummary = function(userId, period, area){
+  const data = buildKpiTaskSummary(userId, period, area);
+  window._kpiSummaryData = data;                       // để nút xuất file trong cửa sổ con gọi lại
+  const w = window.open('', 'kpiTaskSummary_'+userId+'_'+period+'_'+area,
+                        'width=1400,height=900,scrollbars=yes,resizable=yes');
+  if(!w){ toast('Trình duyệt đã chặn cửa sổ bật lên — hãy cho phép pop-up cho trang này','error'); return; }
+  w.document.open();
+  w.document.write(_kpiSummaryWindowHtml(data));
+  w.document.close();
+  try{ w.focus(); }catch(e){}
+  toast('Đã mở bảng tổng hợp công việc theo chỉ tiêu KPI');
+};
+function _kpiSumChip(n, label, color, bg){
+  return `<div style="background:${bg};color:${color};border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;white-space:nowrap">${label}: <b style="font-size:15px">${n}</b></div>`;
+}
+function _kpiSummaryWindowHtml(d){
+  const esc = escapeHtml;
+  const dt = ts=> ts ? fmtDate(ts) : '—';
+  const grpHtml = d.groups.map((g,gi)=>{
+    const body = g.rows.length ? g.rows.map((r,i)=>`<tr>
+        <td class="c">${i+1}</td>
+        <td><b>${esc(r.title)}</b>${r.note?`<div class="note">${esc(r.note)}</div>`:''}</td>
+        <td>${esc(r.project)}${r.projectCode?`<div class="note">Số HĐ: ${esc(r.projectCode)}</div>`:''}</td>
+        <td class="c">${dt(r.createdAt)}</td>
+        <td class="c">${dt(r.dueDate)}</td>
+        <td class="c">${dt(r.doneAt)}</td>
+        <td class="c">${r.progress}%</td>
+        <td class="c"><span class="st" style="color:${r.statusCss};background:${r.statusBg}">${esc(r.statusLabel)}</span></td>
+        <td>${esc(r.approver||'—')}</td>
+      </tr>`).join('')
+      : `<tr><td colspan="9" class="empty">Chưa có công việc nào được gắn với chỉ tiêu này trong tháng. Khi giao việc, hãy tích chọn chỉ tiêu KPI tương ứng để phần mềm tự tổng hợp.</td></tr>`;
+    return `<div class="grp">
+      <h3>${gi+1}. ${esc(g.name)} <span class="w">trọng số ${(g.weight*100).toFixed(0)}% · mục tiêu ${esc(String(g.target))} ${esc(g.unit)}</span></h3>
+      <div class="chips">
+        ${_kpiSumChip(g.stat.total,'Tổng số việc','#1e3a8a','#dbeafe')}
+        ${_kpiSumChip(g.stat.doneOnTime,'Hoàn thành đúng hạn','#166534','#dcfce7')}
+        ${_kpiSumChip(g.stat.doneLate,'Hoàn thành trễ','#b45309','#fef3c7')}
+        ${_kpiSumChip(g.stat.behind,'Chậm tiến độ','#9a3412','#ffedd5')}
+        ${_kpiSumChip(g.stat.overdue,'Quá hạn chưa xong','#991b1b','#fee2e2')}
+        ${_kpiSumChip(g.stat.doing,'Đang thực hiện','#1e40af','#dbeafe')}
+      </div>
+      <table>
+        <thead><tr><th style="width:38px">STT</th><th>Tên công việc</th><th>Dự án</th><th style="width:92px">Ngày giao</th><th style="width:92px">Hạn hoàn thành</th><th style="width:100px">Ngày hoàn thành</th><th style="width:60px">Tiến độ</th><th style="width:130px">Trạng thái</th><th style="width:130px">Người phê duyệt</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  const unlinkedHtml = d.unlinked.length ? `<div class="grp warn">
+      <h3>⚠ Công việc CHƯA gắn chỉ tiêu KPI (${d.unlinked.length})</h3>
+      <div class="hint">Các việc này không được tính vào chỉ tiêu nào ở trên. Vào "Theo dõi công việc" → Sửa công việc → tích chọn chỉ tiêu KPI để phần mềm tự tổng hợp vào đúng mục.</div>
+      <table>
+        <thead><tr><th style="width:38px">STT</th><th>Tên công việc</th><th>Dự án</th><th style="width:92px">Ngày giao</th><th style="width:92px">Hạn hoàn thành</th><th style="width:100px">Ngày hoàn thành</th><th style="width:60px">Tiến độ</th><th style="width:130px">Trạng thái</th><th style="width:130px">Người phê duyệt</th></tr></thead>
+        <tbody>${d.unlinked.map((r,i)=>`<tr>
+          <td class="c">${i+1}</td><td><b>${esc(r.title)}</b></td><td>${esc(r.project)}</td>
+          <td class="c">${dt(r.createdAt)}</td><td class="c">${dt(r.dueDate)}</td><td class="c">${dt(r.doneAt)}</td>
+          <td class="c">${r.progress}%</td>
+          <td class="c"><span class="st" style="color:${r.statusCss};background:${r.statusBg}">${esc(r.statusLabel)}</span></td>
+          <td>${esc(r.approver||'—')}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  return `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8">
+<title>Tổng hợp công việc KPI — ${esc(d.emp?d.emp.name:'')} · ${esc(fmtPeriod(d.period))}</title>
+<style>
+  *{box-sizing:border-box}
+  body{font-family:'Segoe UI',Arial,sans-serif;margin:0;background:#f1f5f9;color:#0f172a}
+  .bar{position:sticky;top:0;z-index:10;background:#1e3a8a;color:#fff;padding:12px 20px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+  .bar h1{margin:0;font-size:17px}
+  .bar .sub{font-size:12px;opacity:.85;margin-top:2px}
+  .bar button{border:none;border-radius:8px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;margin-left:6px}
+  .bx{background:#16a34a;color:#fff}.bw{background:#2563eb;color:#fff}.bp{background:#e2e8f0;color:#0f172a}
+  .wrap{padding:16px 20px 40px}
+  .ov{background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:16px;border-left:5px solid #1e3a8a}
+  .ov h2{margin:0 0 4px;font-size:15px;color:#1e3a8a}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .grp{background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:14px;border-left:5px solid #0f766e}
+  .grp.warn{border-left-color:#f59e0b}
+  .grp h3{margin:0;font-size:14.5px;color:#0f766e}
+  .grp.warn h3{color:#b45309}
+  .grp h3 .w{font-weight:400;font-size:12px;color:#64748b}
+  .hint{font-size:12px;color:#64748b;margin:6px 0}
+  table{border-collapse:collapse;width:100%;font-size:12.5px;margin-top:6px}
+  th,td{border:1px solid #cbd5e1;padding:6px 8px;vertical-align:top}
+  th{background:#1e3a8a;color:#fff;font-weight:600;text-align:left}
+  td.c{text-align:center}
+  tbody tr:nth-child(even){background:#f8fafc}
+  .note{font-size:11px;color:#64748b;margin-top:2px}
+  .st{display:inline-block;border-radius:99px;padding:2px 8px;font-size:11px;font-weight:700}
+  .empty{text-align:center;color:#94a3b8;font-style:italic;padding:14px}
+  @media print{.bar button{display:none}body{background:#fff}}
+</style></head><body>
+<div class="bar">
+  <div>
+    <h1>📋 Tổng hợp công việc theo chỉ tiêu KPI</h1>
+    <div class="sub">${esc(d.emp?d.emp.name:'')} · ${esc(d.areaName)} · ${esc(fmtPeriod(d.period))} · ${esc(d.company)} — lập lúc ${esc(fmtDateTime(d.generatedAt))} bởi ${esc(d.generatedBy)}</div>
+  </div>
+  <div>
+    <button class="bx" onclick="window.opener.exportKpiTaskSummaryExcel()">📊 Xuất Excel</button>
+    <button class="bw" onclick="window.opener.exportKpiTaskSummaryWord()">📝 Xuất Word</button>
+    <button class="bp" onclick="window.print()">🖨 In</button>
+  </div>
+</div>
+<div class="wrap">
+  <div class="ov">
+    <h2>Tổng quan toàn bộ công việc trong tháng</h2>
+    <div class="chips">
+      ${_kpiSumChip(d.overall.total,'Tổng số việc','#1e3a8a','#dbeafe')}
+      ${_kpiSumChip(d.overall.doneOnTime,'Hoàn thành đúng hạn','#166534','#dcfce7')}
+      ${_kpiSumChip(d.overall.doneLate,'Hoàn thành trễ','#b45309','#fef3c7')}
+      ${_kpiSumChip(d.overall.behind,'Chậm tiến độ','#9a3412','#ffedd5')}
+      ${_kpiSumChip(d.overall.overdue,'Quá hạn chưa xong','#991b1b','#fee2e2')}
+      ${_kpiSumChip(d.overall.doing,'Đang thực hiện','#1e40af','#dbeafe')}
+    </div>
+    <div class="hint">Bảng dưới đây tổng hợp TỰ ĐỘNG: mỗi chỉ tiêu KPI là một mục, mỗi công việc đã gắn với chỉ tiêu đó là một dòng. Một công việc gắn nhiều chỉ tiêu sẽ xuất hiện ở tất cả các mục tương ứng.</div>
+  </div>
+  ${grpHtml}
+  ${unlinkedHtml}
+</div>
+</body></html>`;
+}
+/* ---------- Xuất Excel bảng tổng hợp (gọi từ cửa sổ con) ---------- */
+window.exportKpiTaskSummaryExcel = function(){
+  const d = window._kpiSummaryData;
+  if(!d){ toast('Không có dữ liệu tổng hợp','error'); return; }
+  const HEAD = ['STT','Tên công việc','Dự án','Ngày giao','Hạn hoàn thành','Ngày hoàn thành','Tiến độ %','Trạng thái','Người phê duyệt','Người giao việc','Ghi chú'];
+  const NCOL = HEAD.length;
+  const aoa = [];
+  const styleRows = [];          // {r, kind}
+  const dt = ts=> ts ? fmtDate(ts) : '';
+  aoa.push(['TỔNG HỢP CÔNG VIỆC THEO CHỈ TIÊU KPI']); styleRows.push({r:aoa.length-1, kind:'title'});
+  aoa.push(['Nhân viên:', d.emp?d.emp.name:'', 'Mảng:', d.areaName, 'Kỳ:', fmtPeriod(d.period)]);
+  aoa.push(['Công ty:', d.company, 'Lập lúc:', fmtDateTime(d.generatedAt), 'Người lập:', d.generatedBy]);
+  aoa.push(['Tổng số việc:', d.overall.total, 'Hoàn thành đúng hạn:', d.overall.doneOnTime, 'Hoàn thành trễ:', d.overall.doneLate]);
+  aoa.push(['Chậm tiến độ:', d.overall.behind, 'Quá hạn chưa xong:', d.overall.overdue, 'Đang thực hiện:', d.overall.doing]);
+  aoa.push([]);
+  const pushGroup = (title, sub, rows, kindHdr)=>{
+    aoa.push([title]);                       styleRows.push({r:aoa.length-1, kind:kindHdr});
+    if(sub){ aoa.push([sub]);                styleRows.push({r:aoa.length-1, kind:'sub'}); }
+    aoa.push(HEAD.slice());                  styleRows.push({r:aoa.length-1, kind:'head'});
+    if(!rows.length){
+      aoa.push(['', 'Chưa có công việc nào được gắn với chỉ tiêu này trong tháng']);
+      styleRows.push({r:aoa.length-1, kind:'empty'});
+    } else {
+      rows.forEach((r,i)=>{
+        aoa.push([i+1, r.title, r.project, dt(r.createdAt), dt(r.dueDate), dt(r.doneAt),
+                  r.progress/100, r.statusLabel, r.approver||'', r.giver||'', r.note||'']);
+        styleRows.push({r:aoa.length-1, kind:'data', st:r.statusKey});
+      });
+    }
+    aoa.push([]);
+  };
+  d.groups.forEach((g,gi)=>{
+    pushGroup(`${gi+1}. ${g.name}`,
+      `Trọng số ${(g.weight*100).toFixed(0)}% · Mục tiêu ${g.target} ${g.unit} — Tổng ${g.stat.total} việc · Đúng hạn ${g.stat.doneOnTime} · Trễ ${g.stat.doneLate} · Chậm tiến độ ${g.stat.behind} · Quá hạn ${g.stat.overdue} · Đang làm ${g.stat.doing}`,
+      g.rows, 'grp');
+  });
+  if(d.unlinked.length) pushGroup('⚠ Công việc CHƯA gắn chỉ tiêu KPI', 'Cần bổ sung liên kết chỉ tiêu khi giao việc để được tổng hợp tự động', d.unlinked, 'warn');
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const A=(r,c)=>XLSX.utils.encode_cell({r:r,c:c});
+  ws['!cols'] = xlAutoWidth(aoa, {skipRows: styleRows.filter(x=>x.kind!=='data'&&x.kind!=='head').map(x=>x.r), min:8, max:46, pad:3});
+  ws['!merges'] = [{s:{r:0,c:0}, e:{r:0,c:NCOL-1}}].concat(
+    styleRows.filter(x=>x.kind==='grp'||x.kind==='warn'||x.kind==='sub'||x.kind==='empty')
+             .map(x=>({s:{r:x.r,c:x.kind==='empty'?1:0}, e:{r:x.r,c:NCOL-1}})));
+  ws[A(0,0)].s = {font:{bold:true,sz:15,color:{rgb:'FF1E3A8A'}}, alignment:{horizontal:'center'}};
+  for(let r=1;r<=4;r++) for(let c=0;c<6;c++){ const ad=A(r,c); if(ws[ad]) ws[ad].s={font:{bold:(c%2===0), sz:10}}; }
+  styleRows.forEach(x=>{
+    if(x.kind==='grp' || x.kind==='warn'){
+      xlApplyBorders(ws, x.r, 0, x.r, NCOL-1, ()=>({font:{bold:true,sz:12,color:{rgb:'FFFFFFFF'}},
+        fill:{patternType:'solid', fgColor:{rgb: x.kind==='warn'?'FFB45309':'FF0F766E'}},
+        alignment:{horizontal:'left', vertical:'center'}}));
+    } else if(x.kind==='sub'){
+      xlApplyBorders(ws, x.r, 0, x.r, NCOL-1, ()=>({font:{italic:true,sz:10,color:{rgb:'FF475569'}},
+        fill:{patternType:'solid', fgColor:{rgb:'FFF1F5F9'}}}));
+    } else if(x.kind==='head'){
+      xlApplyBorders(ws, x.r, 0, x.r, NCOL-1, ()=>({font:{bold:true,color:{rgb:'FFFFFFFF'}},
+        fill:{patternType:'solid', fgColor:{rgb:'FF1E3A8A'}},
+        alignment:{horizontal:'center', vertical:'center', wrapText:true}}));
+    } else if(x.kind==='empty'){
+      xlApplyBorders(ws, x.r, 0, x.r, NCOL-1, ()=>({font:{italic:true,color:{rgb:'FF94A3B8'}}}));
+    } else if(x.kind==='data'){
+      const bg = {done_ontime:'FFDCFCE7', done_late:'FFFEF3C7', overdue:'FFFEE2E2', behind:'FFFFEDD5', doing:'FFDBEAFE'}[x.st]||'FFFFFFFF';
+      xlApplyBorders(ws, x.r, 0, x.r, NCOL-1, (R,C)=>({
+        alignment:{vertical:'center', horizontal:(C===0||(C>=3&&C<=7))?'center':'left', wrapText:(C===1||C===2||C===10)},
+        fill:{patternType:'solid', fgColor:{rgb:bg}}
+      }));
+      const pc = A(x.r, 6); if(ws[pc]) ws[pc].z='0%';
+    }
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Tổng hợp KPI');
+  const fname = `TongHopCongViec_KPI_${(d.emp?(d.emp.code||d.emp.username||d.emp.name):'NV')}_${d.period}.xlsx`;
+  XLSX.writeFile(wb, fname.replace(/[\\/:*?"<>|]/g,'_'));
+  toast('Đã xuất Excel bảng tổng hợp công việc theo chỉ tiêu KPI');
+};
+/* ---------- Xuất Word bảng tổng hợp (gọi từ cửa sổ con) ---------- */
+window.exportKpiTaskSummaryWord = function(){
+  const d = window._kpiSummaryData;
+  if(!d){ toast('Không có dữ liệu tổng hợp','error'); return; }
+  const esc=escapeHtml, dt = ts=> ts?fmtDate(ts):'—';
+  const tbl = rows => `<table><thead><tr>
+      <th>STT</th><th>Tên công việc</th><th>Dự án</th><th>Ngày giao</th><th>Hạn hoàn thành</th>
+      <th>Ngày hoàn thành</th><th>Tiến độ</th><th>Trạng thái</th><th>Người phê duyệt</th></tr></thead><tbody>
+    ${rows.length?rows.map((r,i)=>`<tr>
+      <td class="c">${i+1}</td><td>${esc(r.title)}</td><td>${esc(r.project)}</td>
+      <td class="c">${dt(r.createdAt)}</td><td class="c">${dt(r.dueDate)}</td><td class="c">${dt(r.doneAt)}</td>
+      <td class="c">${r.progress}%</td><td class="c">${esc(r.statusLabel)}</td><td>${esc(r.approver||'—')}</td>
+    </tr>`).join(''):'<tr><td colspan="9" class="c"><i>Chưa có công việc nào được gắn với chỉ tiêu này trong tháng</i></td></tr>'}
+    </tbody></table>`;
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+  <head><meta charset="UTF-8"><title>Tổng hợp công việc KPI</title>
+  <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
+  <style>@page{size:A4 landscape;margin:1.2cm}
+    body{font-family:Arial,sans-serif;font-size:10.5pt}
+    h1{color:#1e3a8a;font-size:16pt;margin:0 0 6pt}
+    h2{color:#0f766e;font-size:12.5pt;margin:14pt 0 4pt;border-bottom:1pt solid #0f766e;padding-bottom:2pt}
+    .meta{font-size:9.5pt;color:#475569;margin-bottom:8pt}
+    .sub{font-size:9.5pt;color:#475569;font-style:italic;margin:2pt 0 4pt}
+    table{border-collapse:collapse;width:100%;margin:4pt 0}
+    th,td{border:0.5pt solid #94a3b8;padding:3pt 5pt;vertical-align:top}
+    th{background:#1e3a8a;color:#fff;font-size:9.5pt}
+    td{font-size:9.5pt}
+    td.c{text-align:center}
+  </style></head><body>
+  <h1>TỔNG HỢP CÔNG VIỆC THEO CHỈ TIÊU KPI</h1>
+  <div class="meta">
+    <b>Nhân viên:</b> ${esc(d.emp?d.emp.name:'')} &nbsp;·&nbsp; <b>Mảng:</b> ${esc(d.areaName)} &nbsp;·&nbsp; <b>Kỳ đánh giá:</b> ${esc(fmtPeriod(d.period))}<br>
+    <b>Công ty:</b> ${esc(d.company)} &nbsp;·&nbsp; <b>Lập lúc:</b> ${esc(fmtDateTime(d.generatedAt))} &nbsp;·&nbsp; <b>Người lập:</b> ${esc(d.generatedBy)}<br>
+    <b>Tổng quan:</b> ${d.overall.total} việc — hoàn thành đúng hạn ${d.overall.doneOnTime} · hoàn thành trễ ${d.overall.doneLate} · chậm tiến độ ${d.overall.behind} · quá hạn chưa xong ${d.overall.overdue} · đang thực hiện ${d.overall.doing}
+  </div>
+  ${d.groups.map((g,gi)=>`<h2>${gi+1}. ${esc(g.name)}</h2>
+    <div class="sub">Trọng số ${(g.weight*100).toFixed(0)}% · Mục tiêu ${esc(String(g.target))} ${esc(g.unit)} — Tổng ${g.stat.total} việc · đúng hạn ${g.stat.doneOnTime} · trễ ${g.stat.doneLate} · chậm tiến độ ${g.stat.behind} · quá hạn ${g.stat.overdue} · đang làm ${g.stat.doing}</div>
+    ${tbl(g.rows)}`).join('')}
+  ${d.unlinked.length?`<h2 style="color:#b45309;border-color:#b45309">⚠ Công việc chưa gắn chỉ tiêu KPI (${d.unlinked.length})</h2>
+    <div class="sub">Cần bổ sung liên kết chỉ tiêu khi giao việc để được tổng hợp tự động.</div>${tbl(d.unlinked)}`:''}
+  </body></html>`;
+  const blob = new Blob(['﻿'+html], {type:'application/msword;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `TongHopCongViec_KPI_${(d.emp?(d.emp.code||d.emp.username||d.emp.name):'NV')}_${d.period}.doc`.replace(/[\\/:*?"<>|]/g,'_');
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  toast('Đã xuất Word bảng tổng hợp công việc theo chỉ tiêu KPI');
+};
 
 window.openKPIForm = function(userId, period, area){
   const db=getDB();
@@ -5279,6 +5825,7 @@ window.openKPIForm = function(userId, period, area){
       </div>
     `,
     footer:`<button class="btn outline" onclick="closeModal()">Hủy</button>
+            <button class="btn" style="background:#0f766e" onclick="openKpiTaskSummary('${userId}','${period}','${area}')" title="[v21-4] Mở CỬA SỔ RIÊNG tổng hợp tự động toàn bộ công việc của nhân viên theo từng chỉ tiêu KPI — xuất được Excel/Word">📋 Tổng hợp công việc</button>
             <button class="btn outline" onclick="syncTargetsFromConfig('${area}')" title="Cập nhật cột Mục tiêu theo Cấu hình KPI mới nhất (giữ nguyên Thực tế)">⟳ Mục tiêu theo cấu hình</button>
             <button class="btn" style="background:#6366f1" onclick="fillFormAuto('${userId}','${period}','${area}')">🔗 Lấy số liệu tự động</button>
             <button class="btn success" onclick="saveKPIForm('${userId}','${period}','${ev.id}','${area}')">💾 Lưu KPI</button>`,
@@ -5609,6 +6156,11 @@ window.saveKPIItem = function(area, type, idx){
    REPORTS & EXCEL EXPORT
    ============================================================ */
 function viewReports(main, u){
+  // [v21-1] Chốt chặn: chỉ Admin / Quản lý / người được phân quyền chấm công
+  if(!canSeeSalary()){
+    main.innerHTML='<div class="card"><div class="empty">🔒 Thông tin lương được bảo mật — bạn không có quyền xem báo cáo lương của công ty.</div></div>';
+    return;
+  }
   const db=getDB();
   const period = thisPeriod();
   main.innerHTML=`
@@ -7101,6 +7653,18 @@ function canApproveAttendance(){
   if(u.role==='admin') return true;
   const db=getDB();
   return Array.isArray(db.settings.attendanceApprovers) && db.settings.attendanceApprovers.includes(u.id);
+}
+/* ============================================================
+   [v21-1] QUYỀN XEM / XUẤT THÔNG TIN LƯƠNG TOÀN CÔNG TY
+   Bảng lương của cả công ty là thông tin NHẠY CẢM. Chỉ 3 nhóm được xem
+   và xuất file: Admin · Quản lý (pm) · người được Admin phân quyền chấm công.
+   NHÂN VIÊN và TRƯỞNG PHÒNG (manager) KHÔNG được xem lương của bất kỳ ai
+   (vẫn xem được ngày công, tăng ca, tỷ lệ công của mình và của NV).
+   ============================================================ */
+function canSeeSalary(){
+  const u=currentUser(); if(!u) return false;
+  if(u.role==='admin' || u.role==='pm') return true;
+  return canApproveAttendance();   // người được Admin phân quyền chấm công
 }
 /* [YC5] Quyền duyệt (tiến độ/hoàn thành) đối với 1 công việc cụ thể:
    - Việc TỰ GIAO (selfAssigned): NV tạo việc KHÔNG được tự duyệt — chỉ admin/pm/manager.
