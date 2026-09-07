@@ -1101,6 +1101,16 @@ function migrateDB(db){
 // [v24] attendance KHÔNG tải khi mở app — AttSub tải đúng phạm vi (nhân viên: của mình; người duyệt: theo tháng đang xem)
 const _BOOT_KEYS = [...DB_KEYS.filter(k=>k!=='attendance'), 'attendancePeriods'];
 let _firstSnap = null, _firstSnapResolve = null;
+/* [v31][BLOCKER B] Nhánh bị Security Rules TỪ CHỐI ĐỌC trong lúc khởi động.
+   TRƯỚC ĐÂY: lỗi PERMISSION_DENIED của một nhánh bị coi như "nhánh rỗng", khởi động vẫn
+   chạy tiếp và đặt _dbLoaded=true → tấm lưới an toàn CHỈ XEM KHÔNG bung ra, migrateDB()
+   điền dữ liệu MẶC ĐỊNH vào các nhánh đó (salaryRanks, kpiTemplates…) rồi phần mềm đem
+   dữ liệu mặc định đó đi GHI ĐÈ lên máy chủ.
+   NAY: với bộ rules v29, MỌI người đã đăng nhập và có vai trò đều đọc được cả 14 nhánh khởi
+   động — nên một lệnh đọc bị từ chối KHÔNG BAO GIỜ là chuyện bình thường: nó luôn có nghĩa
+   là xác thực / phân quyền đang hỏng. Vì vậy: từ chối đọc = KHÔNG coi là đã tải xong. */
+let _bootDenied = {};
+window._bootDeniedInfo = ()=>Object.assign({}, _bootDenied);
 function _onFirstSnap(k, v){
   if(!_firstSnap) _firstSnap={};
   _firstSnap[k] = (v===undefined) ? null : v;
@@ -1119,9 +1129,20 @@ async function fbPullOnce(){
   let data;
   if(!_dbLoaded && !_firstSnapResolve){
     // Lần đầu: bật listener rồi chờ ảnh đầu tiên của mọi nhánh (tải 1 lần)
+    _bootDenied={};
     fbStartRealtime();
     data = await new Promise(res=>{ _firstSnapResolve=res; if(_firstSnap) _onFirstSnap('_probe', undefined); });
     delete data._probe;
+    /* [v31][BLOCKER B] Có nhánh bị Rules từ chối → COI NHƯ CHƯA TẢI ĐƯỢC.
+       Không được đi tiếp với dữ liệu rỗng/mặc định rồi ghi đè lên máy chủ. */
+    const denied=Object.keys(_bootDenied);
+    if(denied.length){
+      _firstSnap=null; _firstSnapResolve=null;
+      const err=new Error('Máy chủ TỪ CHỐI ĐỌC '+denied.length+' nhánh dữ liệu ('+denied.slice(0,5).join(', ')+(denied.length>5?'…':'')+
+        ') — tài khoản chưa được gán vai trò trong hrm/roles, hoặc phần mềm đang chạy ở chế độ LEGACY trong khi Security Rules đã bắt buộc đăng nhập.');
+      err.code='ROLES_MISSING'; err.denied=denied.slice();
+      throw err;
+    }
   } else if(!_dbLoaded){
     // Thử lại sau khi lần đầu bị treo/timeout: đọc thẳng (get) để không phụ thuộc vào yêu cầu đang kẹt
     data = await _fbGetBoot();
@@ -1326,7 +1347,10 @@ function fbStartRealtime(){
   _fbSyncHandle = [];
   DB_KEYS.filter(k=>k!=='attendance').forEach(k=>{
     _fbSyncHandle.push(window._fbOnValue(FB_PATH+'/'+k, v=>{ if(!_dbLoaded) _onFirstSnap(k, v); else _onRemoteKey(k, v); },
-      e=>{ window._fbDenied=window._fbDenied||{}; window._fbDenied[k]=String(e&&e.message||e); if(!_dbLoaded) _onFirstSnap(k, undefined); }));   // [v25] Rules từ chối → không treo boot
+      e=>{ const msg=String(e&&e.message||e);
+           window._fbDenied=window._fbDenied||{}; window._fbDenied[k]=msg;
+           if(!_dbLoaded){ _bootDenied[k]=msg; _onFirstSnap(k, undefined); }   // [v31] ghi nhận để fbPullOnce NÉM LỖI, không coi là nhánh rỗng
+         }));
   });
   // Phát hiện máy khác còn chạy BẢN CŨ (bản cũ ghi cả DB kèm trường _v tăng dần)
   let _lastV=null;
@@ -1336,7 +1360,7 @@ function fbStartRealtime(){
       toast('⚠ Có máy khác đang mở PHIÊN BẢN CŨ của phần mềm — máy đó có thể ghi đè dữ liệu. Yêu cầu mọi người tải lại trang bằng bản mới.','error'); }
   }));
   // [ATTENDANCE-V2][v24] chấm công: KHÔNG nghe cả nhánh — AttSub đăng ký theo phạm vi sau khi đăng nhập; khóa tháng: listener riêng
-  _fbSyncHandle.push(window._fbOnValue(FB_PATH+'/'+ATT_PERIODS_KEY, v=>{ if(!_dbLoaded) _onFirstSnap('attendancePeriods', v); else _onRemotePeriods(v); }, e=>{ if(!_dbLoaded) _onFirstSnap('attendancePeriods', undefined); }));
+  _fbSyncHandle.push(window._fbOnValue(FB_PATH+'/'+ATT_PERIODS_KEY, v=>{ if(!_dbLoaded) _onFirstSnap('attendancePeriods', v); else _onRemotePeriods(v); }, e=>{ if(!_dbLoaded){ _bootDenied[ATT_PERIODS_KEY]=String(e&&e.message||e); } if(!_dbLoaded) _onFirstSnap('attendancePeriods', undefined); }));
   try{
     window._fbOnConnected(on=>{
       const was=_fbConnected; _fbConnected=!!on;
@@ -1372,7 +1396,9 @@ function renderFileStatusBar(){
   }
   const S={
     boot:     ['#e2e8f0','#334155','⏳ Đang kết nối máy chủ…'],
-    readonly: ['#fee2e2','#991b1b','🔒 CHỈ XEM — chưa tải được dữ liệu từ máy chủ, không thể lưu'],
+    readonly: ['#fee2e2','#991b1b', (window._bootRolesBroken
+      ? '⛔ CHỈ XEM — máy chủ TỪ CHỐI đọc dữ liệu (thiếu vai trò trong hrm/roles). Bấm để xem cách khắc phục.'
+      : '🔒 CHỈ XEM — chưa tải được dữ liệu từ máy chủ, không thể lưu')],
     synced:   ['#dcfce7','#166534','🟢 Đã đồng bộ'],
     saving:   ['#fef9c3','#854d0e','🟡 Đang lưu lên máy chủ…'],
     pending:  ['#fef3c7','#92400e','🟡 Có thay đổi chờ đồng bộ'],
@@ -1400,7 +1426,10 @@ function renderFileStatusBar(){
       att=`<span style="padding-left:8px;border-left:1px solid rgba(0,0,0,.15)">⚠ Chấm công: ${AttQueue.conflicts.length} thao tác bị từ chối do xung đột</span><button onclick="openAttSyncPanel()" style="border:none;background:#334155;color:#fff;border-radius:99px;padding:3px 8px;font-size:11px;cursor:pointer">📋</button>`;
     }
   }catch(e){}
-  el.innerHTML = `<span>${S[2]}</span>${err}${stale}${retry}${att}`;
+  /* [v31] Bị máy chủ từ chối vì thiếu vai trò → thử lại vô ích, phải mở bảng khắc phục */
+  const rolesFix = (window._bootRolesBroken || (_lastSaveError && /PERMISSION_DENIED|không có quyền/i.test(String(_lastSaveError.message||_lastSaveError))))
+    ? `<button onclick="openAuthRecovery()" style="border:none;background:#991b1b;color:#fff;border-radius:99px;padding:3px 10px;font-size:11px;cursor:pointer">🔐 Chẩn đoán quyền</button>` : '';
+  el.innerHTML = `<span>${S[2]}</span>${err}${stale}${retry}${rolesFix}${att}`;
   el.title = 'Trạng thái đồng bộ Firebase · máy: '+_CLIENT_ID;
 }
 /* [ATTENDANCE-V2] Bảng chi tiết hàng đợi chấm công + xung đột (mở từ thanh trạng thái) */
@@ -3791,6 +3820,14 @@ function renderLogin(){
       setTimeout(checkDeadlineWarning, 600);
     }catch(err){
       errBox.textContent=err.message;
+      /* [v31] Xác thực OK nhưng CHƯA có vai trò trong hrm/roles → bế tắc, thử lại vô ích.
+         Đánh dấu + mời mở bảng chẩn đoán ngay tại màn hình đăng nhập. */
+      if(/hrm\/roles|gán vai trò/i.test(String(err.message||''))){
+        window._bootRolesBroken = {reason:'signin', at:Date.now(), denied:[]};
+        errBox.innerHTML = escapeHtml(err.message)
+          + ' <button type="button" class="btn sm" style="margin-left:6px" onclick="openAuthRecovery()">🔐 Xem cách khắc phục</button>';
+        try{ renderFileStatusBar(); }catch(e){}
+      }
     }
   }
   document.getElementById('login-form').addEventListener('submit', (e)=>{ e.preventDefault(); doLogin(); });
@@ -9771,11 +9808,92 @@ async function renderAuthPanel(){
         : `<button class="btn success" onclick="authSwitchMode('firebase')" ${adminOK?'':'disabled title="Cần tạo tài khoản Admin trước"'}>🚀 CHUYỂN SANG FIREBASE AUTH</button>`}
       <button class="btn outline" onclick="authDownloadRules()">📥 Tải database.rules.v29.json</button>
       <button class="btn outline" onclick="openProdReadiness()">🧪 Kiểm tra Production Readiness</button>
+      <button class="btn outline" onclick="openAuthRecovery()" title="[v31] Chẩn đoán vì sao máy chủ từ chối và hướng dẫn khôi phục nhánh hrm/roles">🔐 Chẩn đoán quyền / khôi phục hrm/roles</button>
       <button class="btn outline" onclick="normalizeMoneyData()" title="[v30] Ghi đè các số tiền CŨ còn phần thập phân trong cơ sở dữ liệu thành số nguyên đồng. Chỉ đụng tới các trường TIỀN, không đụng chấm công / KPI / lịch sử.">💵 Chuẩn hóa số tiền cũ về số nguyên</button>
       ${(getDB().users||[]).some(u=>u&&u.passwordHash) && mode==='firebase' ? `<button class="btn warn" onclick="authPurgePasswordHashes()">🧹 Xóa ${(getDB().users||[]).filter(u=>u&&u.passwordHash).length} mật khẩu băm cũ</button>` : ''}
       <span class="hint">Thứ tự: 1 → 2 → 3 chuyển chế độ → cài Rules v25 trong Firebase Console (Realtime Database → Rules). Sau khi cài Rules v25, bản LEGACY không còn đọc/ghi được.</span>
     </div>`;
 }
+/* ============================================================
+   [v31] CHẨN ĐOÁN & KHÔI PHỤC QUYỀN QUẢN TRỊ (hrm/roles)
+   Toàn bộ Security Rules đều tra vai trò ở  hrm/roles/{auth.uid}.
+   Nếu nhánh đó TRỐNG thì không ai — kể cả Admin — ghi được gì, và cũng
+   KHÔNG có đường nào tự tạo lại từ trong phần mềm (rule ghi hrm/roles lại
+   đòi người ghi PHẢI đang là admin trong chính hrm/roles). Đây là bế tắc
+   "con gà — quả trứng" có thật, cố ý không nới rule để lách.
+   Lối ra duy nhất ĐÚNG: ghi bản ghi đầu tiên bằng Firebase Console —
+   Console ghi thẳng vào cơ sở dữ liệu và KHÔNG đi qua Security Rules.
+   Hàm này dựng sẵn đúng đoạn JSON cần dán, kèm auth.uid thật của phiên hiện tại.
+   ============================================================ */
+window.hrmDiagnoseAuth = async function(){
+  const out = {authMode:null, signedIn:false, uid:null, login:null, roleOnServer:undefined,
+               canReadUsers:null, denied:(window._bootDeniedInfo?window._bootDeniedInfo():{}), notes:[]};
+  try{ out.authMode = (HrmAuth.cfg&&HrmAuth.cfg.authMode) || 'legacy'; }catch(e){}
+  try{ out.signedIn = !!(window._fbAuth && window._fbAuth.currentUser);
+       out.uid = out.signedIn ? window._fbAuth.currentUser.uid : null;
+       out.login = out.signedIn ? window._fbAuth.currentUser.email : null; }catch(e){}
+  if(out.uid){ try{ out.roleOnServer = await window._fbGet('hrm/roles/'+out.uid); }
+               catch(e){ out.notes.push('Không đọc được hrm/roles/'+out.uid+': '+(e.message||e)); } }
+  try{ await window._fbGet('hrm/users'); out.canReadUsers=true; }
+  catch(e){ out.canReadUsers=false; out.notes.push('Không đọc được hrm/users: '+(e.message||e)); }
+
+  if(out.authMode!=='firebase')
+    out.notes.push('CHẨN ĐOÁN: phần mềm đang ở chế độ LEGACY nhưng Security Rules v29 bắt buộc đăng nhập Firebase → mọi yêu cầu gửi đi KHÔNG kèm danh tính (auth = null) nên bị từ chối hết.');
+  else if(!out.signedIn)
+    out.notes.push('CHẨN ĐOÁN: chưa đăng nhập Firebase Auth.');
+  else if(!out.roleOnServer)
+    out.notes.push('CHẨN ĐOÁN: đã đăng nhập (uid '+out.uid+') nhưng hrm/roles/'+out.uid+' KHÔNG TỒN TẠI → mọi rule tra vai trò đều trả về null.');
+  else if(out.roleOnServer.role!=='admin')
+    out.notes.push('CHẨN ĐOÁN: hrm/roles/'+out.uid+' có tồn tại nhưng role = "'+out.roleOnServer.role+'" (không phải admin) → các thao tác cần quyền Admin bị từ chối.');
+  else out.notes.push('Vai trò trên máy chủ hợp lệ (admin). Nếu vẫn bị từ chối, kiểm tra lại bộ Rules đang Publish trên Firebase Console.');
+  return out;
+};
+
+window.openAuthRecovery = async function(){
+  const d = await window.hrmDiagnoseAuth();
+  const me = (typeof currentUser==='function' && currentUser()) || {};
+  const uid = d.uid || '(CHƯA ĐĂNG NHẬP — hãy đăng nhập Firebase trước)';
+  const rec = {
+    userId: me.id || '(id nhân sự Admin trong hrm/users)',
+    username: me.username || 'admin',
+    name: me.name || 'Quản trị viên',
+    role: 'admin', login: (d.login||'admin').split('@')[0],
+    approver: true, locker: true, corrector: true, salaryEditor: true
+  };
+  const json = JSON.stringify({[d.uid||'DAN_AUTH_UID_VAO_DAY']: rec}, null, 2);
+  const rows = [
+    ['Chế độ đăng nhập (hrm/publicConfig.authMode)', d.authMode],
+    ['Đã đăng nhập Firebase Auth', d.signedIn?'CÓ':'KHÔNG'],
+    ['auth.uid của phiên hiện tại', d.uid||'—'],
+    ['Bản ghi hrm/roles/{auth.uid}', d.roleOnServer? ('CÓ · role = '+d.roleOnServer.role) : 'KHÔNG CÓ'],
+    ['Đọc được hrm/users', d.canReadUsers?'ĐƯỢC':'BỊ TỪ CHỐI'],
+    ['Số nhánh bị từ chối lúc khởi động', String(Object.keys(d.denied||{}).length)]
+  ].map(r=>`<tr><td>${escapeHtml(r[0])}</td><td class="right"><b>${escapeHtml(String(r[1]))}</b></td></tr>`).join('');
+
+  openModal({
+    title:'🔐 Chẩn đoán & khôi phục quyền quản trị',
+    body:`
+      <table style="font-size:13px;width:100%">${rows}</table>
+      <div class="warn-text" style="margin-top:10px">${d.notes.map(n=>escapeHtml(n)).join('<br>')}</div>
+      <h3>Cách khắc phục (làm trên Firebase Console — Console ghi thẳng, KHÔNG qua Security Rules)</h3>
+      <ol style="font-size:13px;line-height:1.7">
+        <li>Mở <b>Firebase Console → Realtime Database → thẻ Data</b>.</li>
+        <li>Bấm vào nhánh <code>hrm</code> → dấu <b>⋮</b> → <b>Import JSON</b> <i>(hoặc bấm <b>+</b> tạo khóa <code>roles</code> rồi dán thủ công)</i>.</li>
+        <li>Tạo nhánh <code>hrm/roles</code> với đúng nội dung dưới đây rồi lưu:</li>
+      </ol>
+      <textarea readonly rows="12" style="width:100%;font-family:monospace;font-size:12px">${escapeHtml(json)}</textarea>
+      <div class="hint">Dán vào <b>hrm/roles</b> (không phải vào gốc). Khóa ngoài cùng chính là <code>auth.uid</code> của tài khoản Admin.</div>
+      <ol start="4" style="font-size:13px;line-height:1.7">
+        <li>Tải lại phần mềm → đăng nhập lại bằng tài khoản Admin đó.</li>
+        <li>Vào <b>Cài đặt → Bảo mật → 🔁 Đồng bộ quyền (hrm/roles + danh bạ)</b> để phần mềm tự ghi vai trò cho TOÀN BỘ nhân sự còn lại.</li>
+        <li>Kiểm tra lại bằng <b>Cài đặt → Kiểm tra Production Readiness</b>.</li>
+      </ol>
+      <div class="help-text">Vì sao phải làm bằng tay bước đầu tiên: rule ghi <code>hrm/roles</code> yêu cầu người ghi <b>đã là admin trong chính hrm/roles</b>. Đây là chủ ý — nới rule để phần mềm tự cấp quyền cho mình sẽ mở đường cho bất kỳ tài khoản nào tự phong admin khi nhánh này trống.</div>`,
+    footer:`<button class="btn outline" onclick="closeModal()">Đóng</button>
+            <button class="btn" onclick="(function(){const t=document.querySelector('.modal-bg textarea');t.select();document.execCommand('copy');toast('Đã chép JSON — dán vào Firebase Console','success');})()">📋 Chép JSON</button>`
+  });
+};
+
 /* ============================================================
    [v30] CHUẨN HÓA SỐ TIỀN CŨ — chỉ Admin, chạy một lần khi cần
    Từ v30 mọi số tiền MỚI đã được làm tròn ngay khi nhập và khi tính, nên phần
@@ -15959,7 +16077,15 @@ window.deletePayDoc = function(cid, did){
     // Bản cũ đặt _fbConnected=true ở đây → đăng nhập lại / mở màn hình chấm công là
     // set('hrm', DB_TRỐNG) → XÓA TRẮNG toàn bộ dữ liệu công ty. Nay: chế độ CHỈ XEM + thử lại nền.
     const msgEl = document.getElementById('fb-loading-msg');
-    if(msgEl) msgEl.textContent = 'Không kết nối được máy chủ — mở ở chế độ CHỈ XEM, đang tự thử kết nối lại…';
+    /* [v31] Phân biệt RÕ hai nguyên nhân: mất mạng ≠ máy chủ từ chối vì thiếu vai trò.
+       Thiếu vai trò thì thử lại bao nhiêu lần cũng vô ích — phải nói thẳng cách khắc phục. */
+    if(e && e.code==='ROLES_MISSING'){
+      window._bootRolesBroken = {denied:e.denied||[], at:Date.now()};
+      if(msgEl) msgEl.innerHTML = '⛔ Máy chủ TỪ CHỐI đọc dữ liệu — phần mềm mở ở chế độ CHỈ XEM.<br>'
+        + '<span style="font-size:13px;font-weight:400">Nguyên nhân gần như chắc chắn: nhánh <code>hrm/roles</code> chưa có bản ghi cho tài khoản này. '
+        + 'Xem hướng dẫn khắc phục ở thanh trạng thái phía dưới.</span>';
+    }
+    else if(msgEl) msgEl.textContent = 'Không kết nối được máy chủ — mở ở chế độ CHỈ XEM, đang tự thử kết nối lại…';
     await new Promise(r => setTimeout(r, 1200));
     if(!_db) _db = _buildEmptyDB();
     _dbLoaded = false;
