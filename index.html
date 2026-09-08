@@ -2859,15 +2859,71 @@ const HrmAuth = {
     if(db.users.some(x=>x&&x.id!==u.id && (x.authLogin===base || (!x.authLogin && authSlug(x.username)===base)))) base = base+'.'+authSlug(u.code||u.id.slice(-4));
     const login = gen>0 ? (base+'.'+gen) : base;
     const pw = password || ('Hr@'+Math.random().toString(36).slice(2,8)+Math.floor(Math.random()*90+10));
+    /* [v32][BLOCKER C] Cấp tài khoản gồm 3 bước KHÔNG nguyên tử:
+         (1) tạo tài khoản trên Firebase Authentication
+         (2) ghi hrm/roles/{authUid}
+         (3) ghi users[].authUid xuống cơ sở dữ liệu
+       Bản cũ: nếu (2) hoặc (3) bị Security Rules TỪ CHỐI, tài khoản ở bước (1) VẪN ĐƯỢC TẠO
+       nhưng không có gì trong cơ sở dữ liệu trỏ tới nó → tài khoản "MỒ CÔI".
+       Lần cấp sau, phần mềm thấy users[].authUid trống nên tạo lại → Firebase trả
+       'auth/email-already-in-use' và KHÔNG BAO GIỜ cấp được nữa.
+       NAY: ghi nhớ mọi tài khoản mồ côi (kèm authUid) để LIÊN KẾT LẠI được sau khi sửa quyền,
+       và báo lỗi nói đúng chuyện gì đã xảy ra. */
     const authUid = await this.createAccount(login, pw);
     const oldUid = u.authUid;
     u.authUid=authUid; u.authLogin=login; u.authGen=gen; u.mustChangePass=true; u.authProvisionedAt=Date.now();
     const patch={ ['roles/'+authUid]: this.roleRecordFor(u) };
     if(oldUid && opts.reissue) patch['roles/'+oldUid]=null;   // thu hồi tài khoản cũ (không còn vai trò → không đọc/ghi được)
-    await window._fbUpdate('hrm', patch);
-    await saveDBStrict(db);
+    try{
+      await window._fbUpdate('hrm', patch);
+      await saveDBStrict(db);
+    }catch(e){
+      u.authUid=oldUid; u.authLogin=u.authLogin===login?undefined:u.authLogin;   // trả bản ghi trong RAM về như cũ
+      this._orphanAdd({userId:u.id, name:u.name||'', login, authUid, password:pw, at:Date.now(), err:String(e&&e.message||e)});
+      const err=new Error('Đã tạo tài khoản đăng nhập "'+login+'" trên Firebase Authentication, NHƯNG máy chủ TỪ CHỐI ghi phân quyền ('+String(e&&e.message||e)+'). '
+        +'Tài khoản này đang MỒ CÔI. Sau khi sửa quyền, bấm "🔗 Liên kết lại tài khoản đã tạo" — KHÔNG bấm cấp tài khoản lại.');
+      err.code='ORPHAN_ACCOUNT'; err.authUid=authUid; err.login=login;
+      throw err;
+    }
+    this._orphanDrop(authUid);
     try{ await this.syncRoles(); }catch(e){ console.warn('[auth] sync dir', e); }
     return {login, password:pw, authUid};
+  },
+
+  /* ---- [v32] Sổ tay tài khoản MỒ CÔI (lưu trong máy Admin) ---- */
+  _orphanKey: 'HRM_ORPHAN_ACCOUNTS',
+  orphans(){ try{ return JSON.parse(localStorage.getItem(this._orphanKey)||'[]')||[]; }catch(e){ return []; } },
+  _orphanSave(a){ try{ localStorage.setItem(this._orphanKey, JSON.stringify(a||[])); }catch(e){} },
+  _orphanAdd(rec){ const a=this.orphans().filter(x=>x.authUid!==rec.authUid); a.push(rec); this._orphanSave(a); },
+  _orphanDrop(uid){ this._orphanSave(this.orphans().filter(x=>x.authUid!==uid)); },
+
+  /* Liên kết lại các tài khoản đã tạo nhưng chưa ghi được phân quyền.
+     KHÔNG tạo tài khoản mới — chỉ ghi hrm/roles/{authUid} + users[].authUid đã biết. */
+  async relinkOrphans(){
+    const list=this.orphans(); if(!list.length) return {ok:0, fail:0, left:0};
+    const db=getDB(); let ok=0, fail=0; const errs=[];
+    for(const o of list){
+      const u=db.users.find(x=>x&&x.id===o.userId);
+      if(!u){ this._orphanDrop(o.authUid); continue; }        // nhân sự đã bị xóa → bỏ khỏi sổ
+      u.authUid=o.authUid; u.authLogin=o.login; u.mustChangePass=true; u.authProvisionedAt=o.at||Date.now();
+      try{
+        await window._fbUpdate('hrm', { ['roles/'+o.authUid]: this.roleRecordFor(u) });
+        await saveDBStrict(db);
+        this._orphanDrop(o.authUid); ok++;
+      }catch(e){ fail++; errs.push(o.login+': '+(e&&e.message||e)); u.authUid=undefined; u.authLogin=undefined; }
+    }
+    try{ if(ok) await this.syncRoles(); }catch(e){ console.warn('[auth] sync dir', e); }
+    return {ok, fail, left:this.orphans().length, errs};
+  },
+
+  /* [v32] Thử quyền TRƯỚC khi cấp tài khoản hàng loạt — ghi rồi xóa ngay một khóa tạm
+     trong hrm/settings (cùng điều kiện quyền với hrm/roles: chỉ Admin).
+     Mục đích: KHÔNG tạo một tài khoản Auth nào nếu chắc chắn sẽ không ghi được phân quyền. */
+  async canWriteRoles(){
+    const k='hrm/settings/__provisionProbe';
+    try{ await window._fbSet(k, Date.now()); }catch(e){ return {ok:false, err:String(e&&e.message||e)}; }
+    try{ await window._fbSet(k, null); }catch(e){}
+    return {ok:true};
   }
 };
 window.HrmAuth=HrmAuth;
@@ -9796,6 +9852,7 @@ async function renderAuthPanel(){
           <button class="btn" onclick="authProvisionAdmin()" ${cfg.apiKey||window.FB_CONFIG.apiKey?'':'disabled'}>👑 Tạo tài khoản Admin</button>
           <button class="btn" onclick="authProvisionAll()" ${(cfg.apiKey||window.FB_CONFIG.apiKey)&&noAcc.length?'':'disabled'}>👥 Cấp tài khoản cho ${noAcc.length} nhân sự</button>
           <button class="btn outline" onclick="authSyncRolesUI()">🔁 Đồng bộ quyền (hrm/roles + danh bạ)</button>
+          ${HrmAuth.orphans().length?`<button class="btn warn" onclick="authRelinkOrphans()" title="[v32] Các tài khoản đã tạo trên Firebase Authentication nhưng chưa ghi được phân quyền. Bấm để ghi nốt — KHÔNG tạo tài khoản mới.">🔗 Liên kết lại ${HrmAuth.orphans().length} tài khoản đã tạo</button>`:''}
         </div>
         ${drift.length?`<div class="warn-text" style="margin-top:6px">⚠ Quyền trên máy chủ LỆCH với cài đặt (${drift.length}): ${drift.slice(0,6).map(escapeHtml).join(' · ')}${drift.length>6?' …':''} → bấm Đồng bộ quyền.</div>`:'<div class="hint" style="color:#166534;margin-top:6px">✔ hrm/roles khớp với users/settings hiện tại</div>'}
         <div class="hint" style="margin-top:6px">Quyền tách nhỏ (v26): duyệt công <b>${(db.settings.attendanceApprovers||[]).length}</b> · khóa tháng <b>${(db.settings.attendanceLockers||[]).length}</b> · duyệt sửa công <b>${(db.settings.attendanceCorrectors||[]).length}</b> · sửa lương <b>${(db.settings.salaryEditors||[]).length}</b> (ngoài Admin). Sửa ở mục quyền phía dưới trang này.</div>
@@ -10169,13 +10226,64 @@ window.authProvisionAll = async function(){
   if(!HrmAuth.cfg||!HrmAuth.cfg.apiKey) await HrmAuth.loadConfig();
   const list=db.users.filter(u=>!u.authUid && u.role!=='admin');
   if(!list.length){ toast('Mọi nhân sự đã có tài khoản'); return; }
+  /* [v32] Còn tài khoản mồ côi thì PHẢI liên kết lại trước — cấp mới nữa chỉ sinh thêm lỗi
+     'Tài khoản đăng nhập này đã tồn tại'. */
+  if(HrmAuth.orphans().length){
+    toast('Còn '+HrmAuth.orphans().length+' tài khoản đã tạo nhưng CHƯA liên kết được — bấm "🔗 Liên kết lại tài khoản đã tạo" trước.','error');
+    return;
+  }
+  /* [v32] Thử quyền TRƯỚC. Nếu máy chủ sẽ từ chối ghi phân quyền thì DỪNG NGAY,
+     không tạo bất kỳ tài khoản Auth nào (tránh sinh ra tài khoản mồ côi). */
+  const probe = await HrmAuth.canWriteRoles();
+  if(!probe.ok){
+    openModal({title:'⛔ Chưa cấp tài khoản được — máy chủ từ chối ghi phân quyền', body:
+      `<div class="warn-text">Máy chủ trả lời: <code>${escapeHtml(probe.err||'')}</code></div>
+       <p>Phần mềm <b>đã dừng lại và KHÔNG tạo tài khoản nào</b>. Nếu cứ tạo, các tài khoản đó sẽ nằm trên
+       Firebase Authentication mà không có phân quyền — lần sau cấp lại sẽ báo
+       <i>"Tài khoản đăng nhập này đã tồn tại"</i> và không cấp được nữa.</p>
+       <p><b>Cần làm trước:</b> bảo đảm nhánh <code>hrm/roles</code> có bản ghi <code>role: "admin"</code> cho
+       chính tài khoản anh đang đăng nhập. Bấm <b>🔐 Chẩn đoán quyền</b> để xem hướng dẫn từng bước.</p>`,
+      footer:`<button class="btn" onclick="closeModal();openAuthRecovery()">🔐 Chẩn đoán quyền</button>
+              <button class="btn outline" onclick="closeModal()">Đóng</button>`});
+    return;
+  }
   if(!confirm('Tạo '+list.length+' tài khoản Firebase với mật khẩu khởi tạo tự sinh (hiển thị 1 lần, có nút tải CSV)?')) return;
-  const out=[]; let fail=0;
-  for(const u of list){ try{ const r=await HrmAuth.provision(u.id, ''); out.push({name:u.name, username:u.username, login:r.login, password:r.password}); }catch(e){ fail++; out.push({name:u.name, username:u.username, login:'', password:'LỖI: '+e.message}); } }
+  const out=[]; let fail=0, exists=0;
+  for(const u of list){
+    try{ const r=await HrmAuth.provision(u.id, ''); out.push({name:u.name, username:u.username, login:r.login, password:r.password}); }
+    catch(e){
+      fail++;
+      const msg=String(e&&e.message||e);
+      if(/đã tồn tại|already-in-use/i.test(msg)) exists++;
+      out.push({name:u.name, username:u.username, login:'', password:'LỖI: '+msg});
+    }
+  }
   const csv='Ho ten,Username,Ten dang nhap,Mat khau khoi tao\n'+out.map(r=>[r.name,r.username,r.login,r.password].map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(',')).join('\n');
   window._authCsv=csv;
-  openModal({title:'👥 Tài khoản đã cấp ('+(out.length-fail)+' OK · '+fail+' lỗi)', size:'lg', html:`<div class="warn-text">Mật khẩu khởi tạo CHỈ hiển thị một lần. Hãy tải CSV và gửi riêng cho từng người; họ phải đổi mật khẩu khi đăng nhập.</div><div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Họ tên</th><th>Tên đăng nhập</th><th>Mật khẩu khởi tạo</th></tr></thead><tbody>${out.map(r=>`<tr><td>${escapeHtml(r.name)}</td><td><b>${escapeHtml(r.login||r.username)}</b></td><td style="font-family:monospace">${escapeHtml(r.password)}</td></tr>`).join('')}</tbody></table></div>`,
+  const existsHelp = exists ? `
+    <div class="warn-text" style="background:#fee2e2;border-color:#fca5a5">
+      <b>⛔ ${exists}/${list.length} tài khoản báo "đã tồn tại" — đây KHÔNG phải lỗi ngẫu nhiên.</b><br>
+      Những tài khoản này <b>đã được tạo thật</b> trên Firebase Authentication ở một lần cấp trước đó,
+      nhưng lúc ấy máy chủ <b>từ chối ghi phân quyền</b> (nhánh <code>hrm/roles</code> chưa có), nên
+      <code>users[].authUid</code> không được lưu. Phần mềm vì thế tưởng chưa ai có tài khoản và tạo lại.
+      <br><br><b>Cách xử lý:</b> Firebase Console → <b>Authentication → Users</b> →
+      chọn ${exists} tài khoản này → <b>Delete</b> → quay lại bấm <b>👥 Cấp tài khoản</b> một lần nữa.
+      <br>⚠ <b>TUYỆT ĐỐI KHÔNG xóa tài khoản Admin</b> đang dùng để đăng nhập.
+      <br>Không mất gì khi xóa: hiện <b>không có bản ghi nào</b> trong cơ sở dữ liệu trỏ tới chúng.
+    </div>` : '';
+  openModal({title:'👥 Tài khoản đã cấp ('+(out.length-fail)+' OK · '+fail+' lỗi)', size:'lg', html:existsHelp+`<div class="warn-text">Mật khẩu khởi tạo CHỈ hiển thị một lần. Hãy tải CSV và gửi riêng cho từng người; họ phải đổi mật khẩu khi đăng nhập.</div><div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Họ tên</th><th>Tên đăng nhập</th><th>Mật khẩu khởi tạo</th></tr></thead><tbody>${out.map(r=>`<tr><td>${escapeHtml(r.name)}</td><td><b>${escapeHtml(r.login||r.username)}</b></td><td style="font-family:monospace">${escapeHtml(r.password)}</td></tr>`).join('')}</tbody></table></div>`,
     footer:`<button class="btn" onclick="(function(){ const b=new Blob([window._authCsv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='TaiKhoan_Firebase_${new Date().toISOString().slice(0,10)}.csv'; a.click(); })()">📥 Tải CSV</button><button class="btn outline" onclick="closeModal()">Đóng</button>`});
+  renderAuthPanel();
+};
+window.authRelinkOrphans = async function(){
+  const n=HrmAuth.orphans().length;
+  if(!n){ toast('Không còn tài khoản nào cần liên kết'); renderAuthPanel(); return; }
+  if(!confirm('Liên kết lại '+n+' tài khoản đã được tạo trên Firebase Authentication?\n\nThao tác này CHỈ ghi phân quyền cho các tài khoản đã có — KHÔNG tạo tài khoản mới, KHÔNG đổi mật khẩu của ai.')) return;
+  try{
+    const r=await HrmAuth.relinkOrphans();
+    if(r.fail) toast('Liên kết được '+r.ok+' · còn '+r.fail+' lỗi: '+(r.errs||[]).slice(0,2).join(' · '),'warn');
+    else toast('Đã liên kết lại '+r.ok+' tài khoản — những người này đăng nhập được ngay','success');
+  }catch(e){ toast('Lỗi: '+(e&&e.message||e),'error'); }
   renderAuthPanel();
 };
 window.authSyncRolesUI = async function(){ try{ const r=await HrmAuth.syncRoles(); toast('Đã đồng bộ '+r.roles+' vai trò · '+r.directory+' mục danh bạ','success'); renderAuthPanel(); }catch(e){ toast('Lỗi: '+e.message,'error'); } };
