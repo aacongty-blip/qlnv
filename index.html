@@ -2879,7 +2879,11 @@ const HrmAuth = {
       await saveDBStrict(db);
     }catch(e){
       u.authUid=oldUid; u.authLogin=u.authLogin===login?undefined:u.authLogin;   // trả bản ghi trong RAM về như cũ
-      this._orphanAdd({userId:u.id, name:u.name||'', login, authUid, password:pw, at:Date.now(), err:String(e&&e.message||e)});
+      /* [v33] Nhớ luôn uid CŨ khi đang CẤP LẠI tài khoản (Reset pass): lúc liên kết lại phải
+         THU HỒI vai trò của tài khoản cũ, nếu không người giữ mật khẩu cũ vẫn còn quyền. */
+      this._orphanAdd({userId:u.id, name:u.name||'', login, authUid, password:pw, at:Date.now(),
+                       oldUid:(opts.reissue && oldUid && oldUid!==authUid) ? oldUid : null,
+                       err:String(e&&e.message||e)});
       const err=new Error('Đã tạo tài khoản đăng nhập "'+login+'" trên Firebase Authentication, NHƯNG máy chủ TỪ CHỐI ghi phân quyền ('+String(e&&e.message||e)+'). '
         +'Tài khoản này đang MỒ CÔI. Sau khi sửa quyền, bấm "🔗 Liên kết lại tài khoản đã tạo" — KHÔNG bấm cấp tài khoản lại.');
       err.code='ORPHAN_ACCOUNT'; err.authUid=authUid; err.login=login;
@@ -2907,7 +2911,9 @@ const HrmAuth = {
       if(!u){ this._orphanDrop(o.authUid); continue; }        // nhân sự đã bị xóa → bỏ khỏi sổ
       u.authUid=o.authUid; u.authLogin=o.login; u.mustChangePass=true; u.authProvisionedAt=o.at||Date.now();
       try{
-        await window._fbUpdate('hrm', { ['roles/'+o.authUid]: this.roleRecordFor(u) });
+        const patch = { ['roles/'+o.authUid]: this.roleRecordFor(u) };
+        if(o.oldUid && o.oldUid!==o.authUid) patch['roles/'+o.oldUid] = null;   // [v33] thu hồi vai trò của tài khoản cũ
+        await window._fbUpdate('hrm', patch);
         await saveDBStrict(db);
         this._orphanDrop(o.authUid); ok++;
       }catch(e){ fail++; errs.push(o.login+': '+(e&&e.message||e)); u.authUid=undefined; u.authLogin=undefined; }
@@ -5774,6 +5780,7 @@ function viewUsers(main, u){
             <td class="muted">${escapeHtml(emp.email||'')}</td>
             <td>
               <button class="btn sm outline" onclick="openUserForm('${emp.id}')">Sửa</button>
+              ${(u.role==='admin' && HrmAuth.isFirebase() && !emp.authUid)?`<button class="btn sm success" onclick="provisionOneUser('${emp.id}')" title="[v34] Cấp tài khoản đăng nhập riêng cho người này">🔑 Cấp TK</button>`:''}
               ${u.role==='admin'?`<button class="btn sm warn" onclick="resetUserPass('${emp.id}')">Reset pass</button>
               <button class="btn sm danger" onclick="deleteUser('${emp.id}')">Xóa</button>`:'<span class="muted" style="font-size:11px" title="Security Rules v26: chỉ Admin được thêm/xóa nhân sự và cấp lại tài khoản">— chỉ Admin</span>'}
             </td>
@@ -5961,6 +5968,53 @@ window.saveUserForm = async function(id){
       if(!id){ const pass=v('f-pass')||'123456'; if(pass.length<6) toast('Mật khẩu khởi tạo phải ≥6 ký tự để cấp tài khoản Firebase — hãy cấp ở Cài đặt → Bảo mật','warn'); else { const r=await HrmAuth.provision(user.id, pass); toast('Đã cấp tài khoản đăng nhập: '+r.login,'success'); } }
       else if(user.authUid){ await HrmAuth.syncRoles(); }
     }catch(e){ toast('Chưa cấp được tài khoản Firebase: '+e.message,'error'); }
+  }
+};
+
+/* [v34] Cấp tài khoản đăng nhập cho ĐÚNG MỘT nhân sự — dùng khi bổ sung người mới,
+   hoặc khi cấp hàng loạt bỏ sót ai đó. Khác "Reset pass": người này CHƯA có tài khoản,
+   nên KHÔNG thêm hậu tố .1 vào tên đăng nhập. */
+window.provisionOneUser = async function(id){
+  const me=currentUser(); if(!me||me.role!=='admin'){ toast('Chỉ Admin được phép','error'); return; }
+  if(!HrmAuth.isFirebase()){ toast('Chỉ dùng được ở chế độ Firebase Auth','error'); return; }
+  const db=getDB(); const u=db.users.find(x=>x.id===id); if(!u) return;
+  if(u.authUid){ toast('Người này ĐÃ có tài khoản đăng nhập. Muốn đổi mật khẩu thì bấm "Reset pass".','warn'); return; }
+  if(HrmAuth.orphans().length){ toast('Còn '+HrmAuth.orphans().length+' tài khoản chưa liên kết — vào Cài đặt → Bảo mật bấm "🔗 Liên kết lại" trước.','error'); return; }
+
+  const probe = await HrmAuth.canWriteRoles();
+  if(!probe.ok){
+    openModal({title:'⛔ Chưa cấp được — máy chủ từ chối ghi phân quyền', body:
+      `<div class="warn-text">Máy chủ trả lời: <code>${escapeHtml(probe.err||'')}</code></div>
+       <p>Phần mềm <b>đã dừng và KHÔNG tạo tài khoản nào</b>. Bấm <b>🔐 Chẩn đoán quyền</b> ở Cài đặt → Bảo mật để xem cách khắc phục.</p>`,
+      footer:`<button class="btn" onclick="closeModal();openAuthRecovery()">🔐 Chẩn đoán quyền</button><button class="btn outline" onclick="closeModal()">Đóng</button>`});
+    return;
+  }
+  const pw = prompt('Mật khẩu khởi tạo cho "'+(u.name||u.username)+'" (≥6 ký tự).\nĐể TRỐNG để phần mềm tự sinh:', '');
+  if(pw===null) return;
+  if(pw && pw.length<6){ toast('Mật khẩu phải ≥6 ký tự','error'); return; }
+  try{
+    const r = await HrmAuth.provision(id, pw||'');
+    const noiDung = 'Ho ten,Username,Ten dang nhap,Mat khau khoi tao\n"'+
+      String(u.name||'').replace(/"/g,'""')+'","'+String(u.username||'').replace(/"/g,'""')+'","'+r.login+'","'+r.password+'"';
+    window._authCsv = noiDung;
+    openModal({title:'🔑 Đã cấp tài khoản — '+escapeHtml(u.name||u.username), html:
+      `<div class="warn-text">⚠ <b>Mật khẩu chỉ hiển thị một lần.</b> Ghi lại hoặc tải CSV trước khi đóng.</div>
+       <table style="font-size:14px;margin-top:8px">
+         <tr><td>Họ tên</td><td><b>${escapeHtml(u.name||u.username)}</b></td></tr>
+         <tr><td>Tên đăng nhập</td><td><b style="font-family:monospace">${escapeHtml(r.login)}</b></td></tr>
+         <tr><td>Mật khẩu khởi tạo</td><td><b style="font-family:monospace;font-size:16px;color:#b91c1c">${escapeHtml(r.password)}</b></td></tr>
+       </table>
+       <div class="hint" style="margin-top:6px">Người này sẽ bị buộc đổi mật khẩu ở lần đăng nhập đầu tiên.</div>
+       <div class="field" style="margin-top:8px"><label>📋 Nội dung CSV</label>
+         <textarea id="auth-csv-box" readonly rows="3" style="width:100%;font-family:monospace;font-size:11px">${escapeHtml(noiDung)}</textarea></div>`,
+      footer:`<button class="btn" onclick="authDownloadCsv()">📥 Tải CSV</button>
+              <button class="btn outline" onclick="authCopyCsv()">📋 Chép</button>
+              <button class="btn outline" onclick="closeModal()">Đóng</button>`});
+    render();
+  }catch(e){
+    if(e && e.code==='ORPHAN_ACCOUNT') toast('⚠ '+e.message,'error');
+    else toast('Lỗi cấp tài khoản: '+(e&&e.message||e),'error');
+    renderAuthPanel && renderAuthPanel();
   }
 };
 
@@ -9872,6 +9926,39 @@ async function renderAuthPanel(){
     </div>`;
 }
 /* ============================================================
+   [v34] TẢI FILE XUỐNG MÁY — một đường duy nhất cho mọi nút tải
+   LỖI CŨ: thẻ <a> được tạo rồi .click() NGAY mà KHÔNG gắn vào trang.
+   Chrome/Edge trong một số ngữ cảnh (bên trong hộp thoại, trang nhúng)
+   bỏ qua cú click đó → nút "Tải CSV" bấm không ra gì, KHÔNG báo lỗi.
+   NAY: gắn vào trang → click → gỡ ra, và TRẢ VỀ true/false để nơi gọi
+   còn biết mà bày cách chép tay khi trình duyệt chặn.
+   ============================================================ */
+window.downloadTextFile = function(fileName, text, mime){
+  try{
+    const blob = new Blob([text], {type: (mime||'text/plain') + ';charset=utf-8'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = fileName;
+    a.style.display = 'none';
+    document.body.appendChild(a);          // ← BẮT BUỘC: phải nằm trong trang thì click mới ăn
+    a.click();
+    setTimeout(()=>{ try{ document.body.removeChild(a); URL.revokeObjectURL(url); }catch(e){} }, 1500);
+    return true;
+  }catch(e){ console.error('[download]', e); return false; }
+};
+/* Chép nội dung vào bộ nhớ tạm — phương án 2 khi trình duyệt chặn tải file */
+window.copyTextToClipboard = async function(text){
+  try{ await navigator.clipboard.writeText(text); return true; }
+  catch(e){
+    try{
+      const ta=document.createElement('textarea'); ta.value=text;
+      ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta);
+      ta.select(); const ok=document.execCommand('copy'); document.body.removeChild(ta); return ok;
+    }catch(e2){ return false; }
+  }
+};
+
+/* ============================================================
    [v31] CHẨN ĐOÁN & KHÔI PHỤC QUYỀN QUẢN TRỊ (hrm/roles)
    Toàn bộ Security Rules đều tra vai trò ở  hrm/roles/{auth.uid}.
    Nếu nhánh đó TRỐNG thì không ai — kể cả Admin — ghi được gì, và cũng
@@ -10248,18 +10335,60 @@ window.authProvisionAll = async function(){
     return;
   }
   if(!confirm('Tạo '+list.length+' tài khoản Firebase với mật khẩu khởi tạo tự sinh (hiển thị 1 lần, có nút tải CSV)?')) return;
-  const out=[]; let fail=0, exists=0;
+  const out=[]; let fail=0, exists=0, dungSom=null;
   for(const u of list){
+    if(dungSom){ out.push({name:u.name, username:u.username, login:'', password:'BỎ QUA (đã dừng sớm)'}); fail++; continue; }
     try{ const r=await HrmAuth.provision(u.id, ''); out.push({name:u.name, username:u.username, login:r.login, password:r.password}); }
     catch(e){
       fail++;
       const msg=String(e&&e.message||e);
       if(/đã tồn tại|already-in-use/i.test(msg)) exists++;
       out.push({name:u.name, username:u.username, login:'', password:'LỖI: '+msg});
+      /* [v34] Ghi phân quyền thất bại = máy chủ đã từ chối. Tiếp tục vòng lặp chỉ tạo thêm
+         tài khoản KHÔNG nối được vào đâu (đúng cảnh "báo OK nhưng dữ liệu không lưu").
+         DỪNG NGAY tại người đầu tiên bị từ chối. */
+      if(e && e.code==='ORPHAN_ACCOUNT') dungSom = msg;
     }
   }
   const csv='Ho ten,Username,Ten dang nhap,Mat khau khoi tao\n'+out.map(r=>[r.name,r.username,r.login,r.password].map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(',')).join('\n');
   window._authCsv=csv;
+
+  /* [v34] KHÔNG tin con số của vòng lặp — ĐỌC LẠI MÁY CHỦ và đối chiếu.
+     Bản cũ báo "18 OK" chỉ vì 18 lần gọi không ném lỗi; nếu máy chủ thật ra không
+     lưu được thì người dùng vẫn thấy "OK" rồi đóng bảng và MẤT HẾT mật khẩu. */
+  let xacMinh = null;
+  try{
+    const [srvUsers, srvRoles] = await Promise.all([window._fbGet('hrm/users'), window._fbGet('hrm/roles')]);
+    const dsSrv = Object.values(srvUsers||{}).filter(Boolean);
+    xacMinh = { tong: dsSrv.length,
+                coUid: dsSrv.filter(x=>x&&x.authUid).length,
+                soRole: Object.keys(srvRoles||{}).length,
+                daCap: dsSrv.filter(x=>x&&x.authUid && list.some(l=>l.id===x.id)).length };
+  }catch(e){ xacMinh = { loi: String(e&&e.message||e) }; }
+
+  const okLoop = out.length - fail;
+  let bangXacMinh;
+  if(!xacMinh || xacMinh.loi){
+    bangXacMinh = `<div class="warn-text" style="background:#fee2e2;border-color:#fca5a5">
+      ⛔ <b>KHÔNG đọc lại được máy chủ để đối chiếu</b> (${escapeHtml((xacMinh&&xacMinh.loi)||'lỗi không rõ')}).
+      <b>Đừng đóng bảng này trước khi đã lưu mật khẩu.</b> Sau đó bấm 🔐 Chẩn đoán quyền.</div>`;
+  } else if(xacMinh.daCap < okLoop || xacMinh.soRole < xacMinh.coUid){
+    bangXacMinh = `<div class="warn-text" style="background:#fee2e2;border-color:#fca5a5">
+      ⛔ <b>MÁY CHỦ KHÔNG KHỚP với kết quả vừa chạy.</b><br>
+      Phần mềm cấp <b>${okLoop}</b> tài khoản, nhưng máy chủ chỉ lưu <b>${xacMinh.daCap}</b> trong số đó
+      (${xacMinh.coUid}/${xacMinh.tong} nhân sự có tài khoản · ${xacMinh.soRole} bản ghi phân quyền).<br>
+      <b>LƯU MẬT KHẨU NGAY</b>, rồi bấm <b>🔁 Đồng bộ quyền</b>. Nếu vẫn lệch, dùng công cụ dòng lệnh:
+      <code>node hrm_admin_tool.js doisoat</code> → <code>capphat</code>.</div>`;
+  } else {
+    bangXacMinh = `<div class="help-text" style="background:#dcfce7;border-color:#86efac">
+      ✅ <b>Máy chủ đã xác nhận:</b> ${xacMinh.coUid}/${xacMinh.tong} nhân sự có tài khoản ·
+      ${xacMinh.soRole} bản ghi phân quyền. Con số trên bảng là số liệu THẬT trên máy chủ.</div>`;
+  }
+  const bangDungSom = dungSom ? `<div class="warn-text" style="background:#fee2e2;border-color:#fca5a5">
+      ⛔ <b>ĐÃ DỪNG SỚM.</b> Máy chủ từ chối ghi phân quyền ở giữa chừng, nên phần mềm dừng lại
+      thay vì tạo tiếp những tài khoản không nối được vào đâu.<br>
+      Lý do: ${escapeHtml(String(dungSom).slice(0,220))}<br>
+      Khắc phục xong thì bấm <b>🔗 Liên kết lại</b> rồi cấp tiếp cho những người còn lại.</div>` : '';
   const existsHelp = exists ? `
     <div class="warn-text" style="background:#fee2e2;border-color:#fca5a5">
       <b>⛔ ${exists}/${list.length} tài khoản báo "đã tồn tại" — đây KHÔNG phải lỗi ngẫu nhiên.</b><br>
@@ -10271,10 +10400,29 @@ window.authProvisionAll = async function(){
       <br>⚠ <b>TUYỆT ĐỐI KHÔNG xóa tài khoản Admin</b> đang dùng để đăng nhập.
       <br>Không mất gì khi xóa: hiện <b>không có bản ghi nào</b> trong cơ sở dữ liệu trỏ tới chúng.
     </div>` : '';
-  openModal({title:'👥 Tài khoản đã cấp ('+(out.length-fail)+' OK · '+fail+' lỗi)', size:'lg', html:existsHelp+`<div class="warn-text">Mật khẩu khởi tạo CHỈ hiển thị một lần. Hãy tải CSV và gửi riêng cho từng người; họ phải đổi mật khẩu khi đăng nhập.</div><div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Họ tên</th><th>Tên đăng nhập</th><th>Mật khẩu khởi tạo</th></tr></thead><tbody>${out.map(r=>`<tr><td>${escapeHtml(r.name)}</td><td><b>${escapeHtml(r.login||r.username)}</b></td><td style="font-family:monospace">${escapeHtml(r.password)}</td></tr>`).join('')}</tbody></table></div>`,
-    footer:`<button class="btn" onclick="(function(){ const b=new Blob([window._authCsv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='TaiKhoan_Firebase_${new Date().toISOString().slice(0,10)}.csv'; a.click(); })()">📥 Tải CSV</button><button class="btn outline" onclick="closeModal()">Đóng</button>`});
+  openModal({title:'👥 Tài khoản đã cấp ('+(out.length-fail)+' OK · '+fail+' lỗi)', size:'lg', html:bangXacMinh+bangDungSom+existsHelp+`<div class="warn-text">⚠ <b>Mật khẩu khởi tạo CHỈ hiển thị một lần.</b> Hãy <b>Tải CSV</b> (hoặc <b>Chép</b> ô bên dưới) TRƯỚC KHI đóng bảng này; họ phải đổi mật khẩu khi đăng nhập.</div>
+    <div class="field" style="margin-top:8px"><label>📋 Nội dung CSV — chép tay được nếu trình duyệt chặn tải file</label>
+      <textarea id="auth-csv-box" readonly rows="6" style="width:100%;font-family:monospace;font-size:11px">${escapeHtml(csv)}</textarea></div><div class="tbl-wrap"><table style="font-size:12px"><thead><tr><th>Họ tên</th><th>Tên đăng nhập</th><th>Mật khẩu khởi tạo</th></tr></thead><tbody>${out.map(r=>`<tr><td>${escapeHtml(r.name)}</td><td><b>${escapeHtml(r.login||r.username)}</b></td><td style="font-family:monospace">${escapeHtml(r.password)}</td></tr>`).join('')}</tbody></table></div>`,
+    footer:`<button class="btn" onclick="authDownloadCsv()">📥 Tải CSV</button>
+            <button class="btn outline" onclick="authCopyCsv()">📋 Chép nội dung</button>
+            <button class="btn outline" onclick="if(confirm('Đã lưu mật khẩu chưa? Đóng rồi sẽ KHÔNG xem lại được.')) closeModal()">Đóng</button>`});
   renderAuthPanel();
 };
+window.authDownloadCsv = function(){
+  const ten = 'TaiKhoan_Firebase_' + new Date().toISOString().slice(0,10) + '.csv';
+  /* \ufeff = BOM, để Excel mở đúng tiếng Việt */
+  const ok = window.downloadTextFile(ten, '\ufeff' + (window._authCsv||''), 'text/csv');
+  if(ok) toast('Đã tải ' + ten + ' — kiểm tra thư mục Downloads','success');
+  else toast('Trình duyệt chặn tải file — hãy bấm "📋 Chép nội dung" rồi dán vào Notepad, lưu đuôi .csv','error');
+};
+window.authCopyCsv = async function(){
+  const box = document.getElementById('auth-csv-box');
+  if(box){ box.focus(); box.select(); }
+  const ok = await window.copyTextToClipboard(window._authCsv||'');
+  toast(ok ? 'Đã chép toàn bộ danh sách — dán vào Excel hoặc Notepad rồi lưu lại'
+           : 'Không chép tự động được — ô CSV đã được bôi đen sẵn, bấm Ctrl+C','warn');
+};
+
 window.authRelinkOrphans = async function(){
   const n=HrmAuth.orphans().length;
   if(!n){ toast('Không còn tài khoản nào cần liên kết'); renderAuthPanel(); return; }
